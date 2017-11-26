@@ -1,33 +1,15 @@
-// wmsmixer - A mixer designed for WindowMaker with scrollwheel support
-// Copyright (C) 2003  Damian Kramer <psiren@hibernaculum.net>
-// Copyright (C) 1998  Sam Hawker <shawkie@geocities.com>
+// wmpulsemixer - A frontend to pamixer designed for WindowMaker
+// Copyright (C) 2026  Fabien Pollet <mail@frmpollet.me> (wmpulsemixer)
+// Copyright (C) 2003  Damian Kramer <psiren@hibernaculum.net> (wmsmixer)
+// Copyright (C) 1998  Sam Hawker <shawkie@geocities.com> (wmmixer)
 // This software comes with ABSOLUTELY NO WARRANTY
 // This software is free software, and you are welcome to redistribute it
 // under certain conditions
-// See the README file for a more complete notice.
+// See the COPYING file for a more complete notice.
 
 
 // Defines, includes and global variables
 // --------------------------------------
-
-// User defines - standard
-#define WINDOWMAKER false
-#define USESHAPE    false
-#define AFTERSTEP   false
-#define NORMSIZE    64
-#define ASTEPSIZE   56
-#define NAME        "wmsmixer"
-#define CLASS       "Wmsmixer"
-
-#define VERSION "0.5.1"
-
-// User defines - custom
-#define MIXERDEV    "/dev/mixer"
-#define BACKCOLOR   "#202020"
-#define LEDCOLOR    "#00c9c1"
-
-#undef CLAMP
-#define CLAMP(x, l, h) (((x) > (h)) ? (h) : (((x) < (l)) ? (l) : (x)))
 
 // Includes - standard
 #include <stdio.h>
@@ -35,11 +17,10 @@
 #include <string.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <stdbool.h>
+#include <errno.h>
 
-// Includes - custom
-#include "mixctl.h"
-
-// X-Windows includes - standard
+// X-Windows includes
 #include <X11/X.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -47,41 +28,52 @@
 #include <X11/xpm.h>
 #include <X11/extensions/shape.h>
 
-// Pixmaps - standard
+// Defines
+#define BOOST       1
+#define WINDOWMAKER false
+#define USESHAPE    false
+#define AFTERSTEP   false
+#define NORMSIZE    64
+#define ASTEPSIZE   56
+#define NAME        "wmpulsemixer"
+#define CLASS       "WmPulseMixer"
+#define PAMIXER     "/usr/bin/pamixer"
+#define BACKCOLOR   "#202020"
+#define LEDCOLOR    "#00c9c1"
+
+#define VERSION "0.1.0"
+
+#undef CLAMP
+#define CLAMP(x, l, h) (((x) > (h)) ? (h) : (((x) < (l)) ? (l) : (x)))
+
+// Pixmaps
 Pixmap pm_main;
 Pixmap pm_tile;
 Pixmap pm_disp;
 Pixmap pm_mask;
-
-// Pixmaps - custom
 Pixmap pm_icon;
 Pixmap pm_digits;
 Pixmap pm_chars;
 
-// Xpm images - standard
-#include "XPM/wmsmixer.xpm"
+// Xpm images
+#include "XPM/wmpulsemixer.xpm"
 #include "XPM/tile.xpm"
-
-// Xpm images - custom
 #include "XPM/icons.xpm"
 #include "XPM/digits.xpm"
 #include "XPM/chars.xpm"
 
-// Variables for command-line arguments - standard
+// Variables for command-line arguments
+double boost=BOOST;
 bool wmaker=WINDOWMAKER;
 bool ushape=USESHAPE;
 bool astep=AFTERSTEP;
 char display[256]="";
 char position[256]="";
 int winsize;
-bool no_volume_display = 0;
-
-// Variables for command-line arguments - custom
-char mixdev[256]=MIXERDEV;
 char backcolor[256]=BACKCOLOR;
 char ledcolor[256]=LEDCOLOR;
 
-// X-Windows basics - standard
+// X-Windows basics
 Atom _XA_GNUSTEP_WM_FUNC;
 Atom deleteWin;
 Display *d_display;
@@ -89,20 +81,17 @@ Window w_icon;
 Window w_main;
 Window w_root;
 Window w_activewin;
-
-// X-Windows basics - custom
 GC gc_gc;
 unsigned long color[4];
 
 int text_counter = 0;
 
-// Misc custom global variables 
-// ----------------------------
+// Global variables
+// ----------------
 
 // Current state information
 int curchannel=0;
-int curleft;
-int curright;
+int curvol;
 
 // For buttons
 int btnstate=0;
@@ -116,44 +105,39 @@ int rpttimer=0;
 // For draggable volume control
 bool dragging=false;
 
-int channels=0;
-int channel[25];
-int icon[25]={0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24};
-char *small_labels[25] = {"vol ", "bass", "trbl", "synt", "pcm ", "spkr", "line",
-			  "mic ", "cd  ", "mix ", "pcm2", "rec ", "igai", "ogai",
-			  "lin1", "lin2", "lin3", "dig1", "dig2", "dig3", "phin",
-			  "phou", "vid ", "rad ", "mon "};
+#define CHANNELS 2
+int icon[CHANNELS]={0, 1};
+char *small_labels[CHANNELS] = {"vol", "mic"};
 
-MixCtl *mixctl;
+// Functions
+// ---------
 
+// Functions - command line parsing
+void scanArgs(int argc, char **argv);
 
-// Procedures and functions
-// ------------------------
-
-// Procedures and functions - standard
+// Functions - interface
 void initXWin(int argc, char **argv);
 void freeXWin();
 void createWin(Window *win, int x, int y);
 unsigned long getColor(char *colorname);
 unsigned long mixColor(char *colorname1, int prop1, char *colorname2, int prop2);
-
-// Procedures and functions - custom
-void scanArgs(int argc, char **argv);
-void readFile();
-void checkVol(bool forced);
-void pressEvent(XButtonEvent *xev);
-void releaseEvent(XButtonEvent *xev);
-void motionEvent(XMotionEvent *xev);
-void repaint();
-void update();
-void drawLeft();
-void drawRight();
 void drawMono();
 void drawVolLevel();
 void drawText(char *text);
 void drawBtns(int btns);
 void drawBtn(int x, int y, int w, int h, bool down);
+void repaint();
+void update();
+void checkVol(bool forced);
+void pressEvent(XButtonEvent *xev);
+void releaseEvent(XButtonEvent *xev);
+void motionEvent(XMotionEvent *xev);
 
+// Functions - pamixer control
+char* pamixerChannel();
+int pamixerGetVolume();
+void pamixerSetVolume(int volume);
+void pamixerIncreaseVolume(int increment);
 
 // Implementation
 // --------------
@@ -176,15 +160,15 @@ int main(int argc, char **argv)
 
   XpmAttributes xpmattr;
   XpmColorSymbol xpmcsym[4]={{"back_color",     NULL, color[0]},
-			     {"led_color_high", NULL, color[1]},
-			     {"led_color_med",  NULL, color[2]},
-			     {"led_color_low",  NULL, color[3]}};
+                             {"led_color_high", NULL, color[1]},
+                             {"led_color_med",  NULL, color[2]},
+                             {"led_color_low",  NULL, color[3]}};
   xpmattr.numsymbols=4;
   xpmattr.colorsymbols=xpmcsym;
   xpmattr.exactColors=false;
   xpmattr.closeness=40000;
   xpmattr.valuemask=XpmColorSymbols | XpmExactColors | XpmCloseness;
-  XpmCreatePixmapFromData(d_display, w_root, wmsmixer_xpm, &pm_main, &pm_mask, &xpmattr);
+  XpmCreatePixmapFromData(d_display, w_root, wmpulsemixer_xpm, &pm_main, &pm_mask, &xpmattr);
   XpmCreatePixmapFromData(d_display, w_root, tile_xpm, &pm_tile, NULL, &xpmattr);
   XpmCreatePixmapFromData(d_display, w_root, icons_xpm, &pm_icon, NULL, &xpmattr);
   XpmCreatePixmapFromData(d_display, w_root, digits_xpm, &pm_digits, NULL, &xpmattr);
@@ -201,89 +185,75 @@ int main(int argc, char **argv)
   XCopyArea(d_display, pm_main, pm_disp, gc_gc, 0, 0, 64, 64, 0, 0);
   XSetClipMask(d_display, gc_gc, None);
 
-  mixctl=new MixCtl(mixdev);
-
-  if(!mixctl->openOK())
-    fprintf(stderr,"%s : Unable to open mixer device '%s'.\n", NAME, mixdev);
-  else{
-    for(int i=0;i<mixctl->getNrDevices();i++){
-      if(i==25){
-	fprintf(stderr,"%s : Sorry, can only use channels 0-24\n", NAME);
-	break;
-      }
-      if(mixctl->getSupport(i)){
-	channel[channels]=i;
-	channels++;
-      }
-    }
+  // check for PAMIXER
+  FILE* pamixerfile=fopen(PAMIXER, "rb");
+  if(pamixerfile) {
+    fclose(pamixerfile);
+    pamixerfile = NULL;
+  } else {
+    perror(PAMIXER);
+    return 1;
   }
 
-  readFile();
+  checkVol(true);
 
-  if(channels==0)
-    fprintf(stderr,"%s : Sorry, no supported channels found.\n", NAME);
-  else{
-    checkVol(true);
+  XEvent xev;
+  XSelectInput(d_display, w_activewin, ExposureMask | ButtonPressMask | ButtonReleaseMask | ButtonMotionMask);
+  XMapWindow(d_display, w_main);
 
-    XEvent xev;
-    XSelectInput(d_display, w_activewin, ExposureMask | ButtonPressMask | ButtonReleaseMask | ButtonMotionMask);
-    XMapWindow(d_display, w_main);
-
-    bool done=false;
-    while(!done){
-      while(XPending(d_display)){
-	XNextEvent(d_display, &xev);
-	switch(xev.type){
-	case Expose:
-	  repaint();
-	  break;
-	case ButtonPress:
-	  pressEvent(&xev.xbutton);
-	  break;
-	case ButtonRelease:
-	  releaseEvent(&xev.xbutton);
-	  break;
-	case MotionNotify:
-	  motionEvent(&xev.xmotion);
-	  break;
-	case ClientMessage:
-	  if(xev.xclient.data.l[0]==deleteWin)
-	    done=true;
-	  break;
-	}
+  bool done=false;
+  while(!done){
+    while(XPending(d_display)){
+      XNextEvent(d_display, &xev);
+      switch(xev.type){
+      case Expose:
+        repaint();
+        break;
+      case ButtonPress:
+        pressEvent(&xev.xbutton);
+        break;
+      case ButtonRelease:
+        releaseEvent(&xev.xbutton);
+        break;
+      case MotionNotify:
+        motionEvent(&xev.xmotion);
+        break;
+      case ClientMessage:
+        if(xev.xclient.data.l[0]==deleteWin)
+          done=true;
+        break;
       }
-
-      if(btnstate & (BTNPREV | BTNNEXT)){
-	rpttimer++;
-	if(rpttimer>=RPTINTERVAL){
-	  if(btnstate & BTNNEXT)
-	    curchannel++;
-	  else
-	    curchannel--;
-	  if(curchannel<0)
-	    curchannel=channels-1;
-	  if(curchannel>=channels)
-	    curchannel=0;
-	  checkVol(true);
-	  rpttimer=0;
-	}
-      }
-      else
-	checkVol(false);
-      
-      if(text_counter) {
-	text_counter--;
-	if(!text_counter) {
-	  drawVolLevel();
-	  repaint();
-	}
-	//	printf("%c", text_counter);
-      }
-
-      XFlush(d_display);
-
-      usleep(50000);
     }
+
+    if(btnstate & (BTNPREV | BTNNEXT)){
+      rpttimer++;
+      if(rpttimer>=RPTINTERVAL){
+        if(btnstate & BTNNEXT)
+          curchannel++;
+        else
+          curchannel--;
+        if(curchannel<0)
+          curchannel=CHANNELS-1;
+        if(curchannel>=CHANNELS)
+          curchannel=0;
+        checkVol(true);
+        rpttimer=0;
+      }
+    }
+    else
+      checkVol(false);
+
+    if(text_counter) {
+      text_counter--;
+      if(!text_counter) {
+        drawVolLevel();
+        repaint();
+      }
+    }
+
+    XFlush(d_display);
+
+    usleep(50000);
   }
   XFreeGC(d_display, gc_gc);
   XFreePixmap(d_display, pm_main);
@@ -294,7 +264,6 @@ int main(int argc, char **argv)
   XFreePixmap(d_display, pm_digits);
   XFreePixmap(d_display, pm_chars);
   freeXWin();
-  delete mixctl;
   return 0;
 }
 
@@ -317,7 +286,7 @@ void initXWin(int argc, char **argv)
   shints.y=0;
   shints.flags=0;
   bool pos=(XWMGeometry(d_display, DefaultScreen(d_display), position, NULL, 0, &shints, &shints.x, &shints.y,
-			&shints.width, &shints.height, &shints.win_gravity) & (XValue | YValue));
+                        &shints.width, &shints.height, &shints.win_gravity) & (XValue | YValue));
   shints.min_width=winsize;
   shints.min_height=winsize;
   shints.max_width=winsize;
@@ -400,9 +369,10 @@ void scanArgs(int argc, char **argv)
 {
   for(int i=1;i<argc;i++){
     if(strcmp(argv[i], "-h")==0 || strcmp(argv[i], "--help")==0) {
-      fprintf(stderr, "wmsmixer - A mixer designed for WindowMaker with scrollwheel support\n");
-      fprintf(stderr, "Copyright (C) 2003  Damian Kramer <psiren@hibernaculum.net>\n");
-      fprintf(stderr, "Copyright (C) 1998  Sam Hawker <shawkie@geocities.com>\n");
+      fprintf(stderr, NAME " - A frontend to pamixer designed for WindowMaker\n");
+      fprintf(stderr, "Copyright (C) 2026  Fabien Pollet <mail@frmpollet.me> (wmpulsemixer)\n");
+      fprintf(stderr, "Copyright (C) 2003  Damian Kramer <psiren@hibernaculum.net> (wmsmixer)\n");
+      fprintf(stderr, "Copyright (C) 1998  Sam Hawker <shawkie@geocities.com> (wmmixer)\n");
       fprintf(stderr, "This software comes with ABSOLUTELY NO WARRANTY\n");
       fprintf(stderr, "This software is free software, and you are welcome to redistribute it\n");
       fprintf(stderr, "under certain conditions\n");
@@ -410,19 +380,26 @@ void scanArgs(int argc, char **argv)
       fprintf(stderr, "usage:\n\n   %s [options]\n\noptions:\n\n",argv[0]);
       fprintf(stderr, "   -h | --help            display this help screen\n");
       fprintf(stderr, "   -v | --version         display the version\n");
+      fprintf(stderr, "   -boost factor          Boost factor, e.g. 1.5 to allow volume up to 150%%\n");
       fprintf(stderr, "   -w                     use WithdrawnState    (for WindowMaker)\n");
       fprintf(stderr, "   -s                     shaped window\n");
       fprintf(stderr, "   -a                     use smaller window    (for AfterStep Wharf)\n");
       fprintf(stderr, "   -l led_color           use the specified color for led display\n");
       fprintf(stderr, "   -b back_color          use the specified color for backgrounds\n");
-      fprintf(stderr, "   -d mix_device          use specified device  (rather than /dev/mixer)\n");
       fprintf(stderr, "   -position position     set window position   (see X manual pages)\n");
       fprintf(stderr, "   -display display       select target display (see X manual pages)\n\n");
       exit(0);
     }
     if(strcmp(argv[i], "-v")==0 || strcmp(argv[i], "--version")==0) {
-      fprintf(stderr, "wmsmixer version %s\n", VERSION);
+      fprintf(stderr, NAME " version %s\n", VERSION);
       exit(0);
+    }
+    if(strcmp(argv[i], "-boost")==0){
+      if(i<argc-1){
+        i++;
+        boost = atof(argv[i]);
+      }
+      continue;
     }
     if(strcmp(argv[i], "-w")==0)
       wmaker=!wmaker;
@@ -430,154 +407,53 @@ void scanArgs(int argc, char **argv)
       ushape=!ushape;
     if(strcmp(argv[i], "-a")==0)
       astep=!astep;
-    if(strcmp(argv[i], "-novol")==0)
-      no_volume_display = 1;
-    if(strcmp(argv[i], "-d")==0){
-      if(i<argc-1){
-	i++;
-	sprintf(mixdev, "%s", argv[i]);
-      }
-      continue;
-    }
     if(strcmp(argv[i], "-l")==0){
       if(i<argc-1){
-	i++;
-	sprintf(ledcolor, "%s", argv[i]);
+        i++;
+        sprintf(ledcolor, "%s", argv[i]);
       }
       continue;
     }
     if(strcmp(argv[i], "-b")==0){
       if(i<argc-1){
-	i++;
-	sprintf(backcolor, "%s", argv[i]);
+        i++;
+        sprintf(backcolor, "%s", argv[i]);
       }
       continue;
     }
     if(strcmp(argv[i], "-position")==0){
       if(i<argc-1){
-	i++;
-	sprintf(position, "%s", argv[i]);
+        i++;
+        sprintf(position, "%s", argv[i]);
       }
       continue;
     }
     if(strcmp(argv[i], "-display")==0){
       if(i<argc-1){
-	i++;
-	sprintf(display, "%s", argv[i]);
+        i++;
+        sprintf(display, "%s", argv[i]);
       }
       continue;
     }
   }
 }
 
-void readFile()
+void checkVol(bool forced)
 {
-  FILE *rcfile;
-  char rcfilen[256];
-  char buf[256];
-  int done;
-  int current=-1;
-  sprintf(rcfilen, "%s/.wmsmixer", getenv("HOME"));
-  if((rcfile=fopen(rcfilen, "r"))!=NULL){
-    channels=0;
-    do{
-      fgets(buf, 250, rcfile);
-      if((done=feof(rcfile))==0){
-	buf[strlen(buf)-1]=0;
-	if(strncmp(buf, "addchannel ", strlen("addchannel "))==0){
-	  sscanf(buf, "addchannel %i", &current);
-	  if(current>=mixctl->getNrDevices() || mixctl->getSupport(current)==false){
-	    fprintf(stderr,"%s : Sorry, this channel (%i) is not supported.\n", NAME, current);
-	    current=-1;
-	  }
-	  else{
-	    channel[channels]=current;
-	    channels++;
-	  }
-	}
-	if(strncmp(buf, "setchannel ", strlen("setchannel "))==0){
-	  sscanf(buf, "setchannel %i", &current);
-	  if(current>=mixctl->getNrDevices() || mixctl->getSupport(current)==false){
-	    fprintf(stderr,"%s : Sorry, this channel (%i) is not supported.\n", NAME, current);
-	    current=-1;
-	  }
-	}
-	if(strncmp(buf, "setname ", strlen("setname "))==0){
-	  if(current==-1)
-	    fprintf(stderr,"%s : Sorry, no current channel.\n", NAME);
-	  else {
-	    small_labels[current] = (char *)malloc(sizeof(char)*5);
-	    sscanf(buf, "setname %4s", small_labels[current]);
-	  }
-	}
-	if(strncmp(buf, "setmono ", strlen("setmono "))==0){
-	  if(current==-1)
-	    fprintf(stderr,"%s : Sorry, no current channel.\n", NAME);
-	  else{
-	    int value;
-	    sscanf(buf, "setmono %i", &value);
-	    mixctl->setLeft(current, value);
-	    mixctl->setRight(current, value);
-	    mixctl->writeVol(current);
-	  }
-	}
-	if(strncmp(buf, "setleft ", strlen("setleft "))==0){
-	  if(current==-1)
-	    fprintf(stderr, "%s : Sorry, no current channel.\n", NAME);
-	  else{
-	    int value;
-	    sscanf(buf, "setleft %i", &value);
-	    mixctl->setLeft(current, value);
-	    mixctl->writeVol(current);
-	  }
-	}
-	if(strncmp(buf, "setright ", strlen("setright "))==0){
-	  if(current==-1)
-	    fprintf(stderr, "%s : Sorry, no current channel.\n", NAME);
-	  else{
-	    int value;
-	    sscanf(buf, "setleft %i", &value);
-	    mixctl->setRight(current, value);
-	    mixctl->writeVol(current);
-	  }
-	}
-      }
-    }  while(done==0);
-    fclose(rcfile);
-  }
-}
+  int vol = pamixerGetVolume();
 
-void checkVol(bool forced=true)
-{
-  mixctl->readVol(channel[curchannel], true);
-  int nl=mixctl->readLeft(channel[curchannel]);
-  int nr=mixctl->readRight(channel[curchannel]);
   if(forced){
-    curleft=nl;
-    curright=nr;
+    curvol = vol;
     update();
     repaint();
   }
   else{
-    if(nl!=curleft || nr!=curright){
-      if(nl!=curleft){
-	curleft=nl;
-	if(mixctl->getStereo(channel[curchannel]))
-	  drawLeft();
-	else
-	  drawMono();
-      }
-      if(nr!=curright){
-	curright=nr;
-	if(mixctl->getStereo(channel[curchannel]))
-	  drawRight();
-	else
-	  drawMono();
-      }
-      if(!no_volume_display)
-	drawVolLevel();
-      repaint();
+    if(vol!=curvol){
+      curvol=vol;
+      drawMono();
+      drawVolLevel();
     }
+    repaint();
   }
 }
 
@@ -588,12 +464,7 @@ void pressEvent(XButtonEvent *xev)
     if(xev->button == Button4) inc = 4;
     else inc = -4;
 
-    mixctl->readVol(channel[curchannel], false);
-    mixctl->setLeft(channel[curchannel],
-		    CLAMP(mixctl->readLeft(channel[curchannel]) + inc, 0, 100));
-    mixctl->setRight(channel[curchannel], 
-		     CLAMP(mixctl->readRight(channel[curchannel]) + inc, 0, 100));
-    mixctl->writeVol(channel[curchannel]);
+    pamixerIncreaseVolume(inc);
     checkVol(false);
     return;
   }
@@ -603,7 +474,7 @@ void pressEvent(XButtonEvent *xev)
   if(x>=5 && y>=47 && x<=17 && y<=57){
     curchannel--;
     if(curchannel<0)
-      curchannel=channels-1;
+      curchannel=CHANNELS-1;
     btnstate |= BTNPREV;
     rpttimer=0;
     drawBtns(BTNPREV);
@@ -612,7 +483,7 @@ void pressEvent(XButtonEvent *xev)
   }
   if(x>=18 && y>=47 && x<=30 && y<=57){
     curchannel++;
-    if(curchannel>=channels)
+    if(curchannel>=CHANNELS)
       curchannel=0;
     btnstate|=BTNNEXT;
     rpttimer=0;
@@ -623,16 +494,12 @@ void pressEvent(XButtonEvent *xev)
   if(x>=37 && x<=56 && y>=8 && y<=56){
     int v=((60-y)*100)/(2*25);
     dragging=true;
-    if(x<=50)
-      mixctl->setLeft(channel[curchannel], v);
-    if(x>=45)
-      mixctl->setRight(channel[curchannel], v);
-    mixctl->writeVol(channel[curchannel]);
+    pamixerSetVolume(v);
     checkVol(false);
     return;
   }
   if(x>=5 && y>=21 && x<=30 && y<=42) {
-    drawText(small_labels[channel[curchannel]]);
+    drawText(small_labels[curchannel]);
     return;
   }
 
@@ -654,11 +521,7 @@ void motionEvent(XMotionEvent *xev)
     int v=((60-y)*100)/(2*25);
     if(v<0)
       v=0;
-    if(x<=50)
-      mixctl->setLeft(channel[curchannel], v);
-    if(x>=45)
-      mixctl->setRight(channel[curchannel], v);
-    mixctl->writeVol(channel[curchannel]);
+    pamixerSetVolume(v);
     checkVol(false);
   }
 }
@@ -672,16 +535,10 @@ void repaint()
 
 void update()
 {
-  drawText(small_labels[channel[curchannel]]);
+  drawText(small_labels[curchannel]);
 
-  XCopyArea(d_display, pm_icon, pm_disp, gc_gc, icon[channel[curchannel]]*26, 0, 26, 24, 5, 19);
-  if(mixctl->getStereo(channel[curchannel])) {
-    drawLeft();
-    drawRight();
-  }
-  else {
-    drawMono();
-  }
+  XCopyArea(d_display, pm_icon, pm_disp, gc_gc, icon[curchannel]*26, 0, 26, 24, 5, 19);
+  drawMono();
 }
 
 void drawText(char *text)
@@ -699,21 +556,18 @@ void drawText(char *text)
     }
     else {
       if(p2 == '\0')
-	p--;
+        p--;
       XCopyArea(d_display, pm_digits, pm_disp, gc_gc, 60, 0, 6, 9, 5+(i*6), 5);
     }
   }
-  if(!no_volume_display)
-    text_counter = 10;
+  text_counter = 10;
 }
 
 void drawVolLevel()
 {
   int digits[4];
 
-  int vol = (mixctl->readLeft(channel[curchannel]) + 
-	     mixctl->readRight(channel[curchannel])) / 2;
-
+  int vol = pamixerGetVolume();
   digits[0] = (vol/100) ? 1 : 10;
   digits[1] = (vol/10) == 10 ? 0 : (vol/10);
   digits[2] = vol%10;
@@ -724,37 +578,11 @@ void drawVolLevel()
   }
 }
 
-void drawLeft()
-{
-  XSetForeground(d_display, gc_gc, color[0]);
-  XFillRectangle(d_display, pm_disp, gc_gc, 46, 7, 2, 49);
-
-  XSetForeground(d_display, gc_gc, color[1]);
-  for(int i=0;i<25;i++) {
-    if(i==(curleft*25)/100)
-      XSetForeground(d_display, gc_gc, color[3]);
-    XFillRectangle(d_display, pm_disp, gc_gc, 37, 55-2*i, 9, 1);
-  }
-}
-
-void drawRight()
-{
-  XSetForeground(d_display, gc_gc, color[0]);
-  XFillRectangle(d_display, pm_disp, gc_gc, 46, 7, 2, 49);
-
-  XSetForeground(d_display, gc_gc, color[1]);
-  for(int i=0;i<25;i++) {
-    if(i==(curright*25)/100)
-      XSetForeground(d_display, gc_gc, color[3]);
-    XFillRectangle(d_display, pm_disp, gc_gc, 48, 55-2*i, 9, 1);
-  }
-}
-
 void drawMono()
 {
   XSetForeground(d_display, gc_gc, color[1]);
   for(int i=0;i<25;i++){
-    if(i==(curright*25)/100)
+    if(i==(curvol*25)/100)
       XSetForeground(d_display, gc_gc, color[3]);
     XFillRectangle(d_display, pm_disp, gc_gc, 37, 55-2*i, 20, 1);
   }
@@ -778,5 +606,60 @@ void drawBtn(int x, int y, int w, int h, bool down)
     XCopyArea(d_display, pm_main, pm_disp, gc_gc, x+w-1, y+1, 1, h-1, x, y);
     XCopyArea(d_display, pm_main, pm_disp, gc_gc, x, y, w-1, 1, x+1, y+h-1);
     XCopyArea(d_display, pm_main, pm_disp, gc_gc, x+1, y+h-1, w-1, 1, x, y);
+  }
+}
+
+char* pamixerChannel() {
+  switch(curchannel) {
+  case 0: // VOL
+    return "";
+  case 1: // MIC
+    return "--source 0";
+  default:
+    return "";
+  }
+}
+
+int pamixerGetVolume()
+{
+  char buffer[1024];
+  sprintf(buffer, "%s %s --get-volume-human | sed 's/muted/0/'", PAMIXER, pamixerChannel());
+  FILE *fd = popen(buffer, "r");
+  if(fd == NULL) {
+    return 0;
+  }
+  int volume;
+  int res = fscanf(fd, "%d", &volume);
+  pclose(fd);
+  if(res != EOF) {
+    return (int)(volume / boost);
+  } else {
+    fprintf(stderr, "Unable to parse result from pamixer");
+  }
+}
+
+void pamixerSetVolume(int volume)
+{
+  char buffer[1024];
+  sprintf(buffer, "%s %s %s --set-volume %d", PAMIXER, pamixerChannel(), boost > 1 ? "--allow-boost" : "", (int)(volume * boost));
+  int res = system(buffer);
+  if(res != 0) {
+    fprintf(stderr, "Error while executing pamixer. Return value: %d - errno %d\n", res, errno);
+  }
+}
+
+void pamixerIncreaseVolume(int inc)
+{
+  char buffer[1024];
+  if(inc > 0) {
+    sprintf(buffer, "%s %s %s -i %d", PAMIXER, pamixerChannel(), boost > 1 ? "--allow-boost" : "", inc);
+  } else if(inc < 0) {
+    sprintf(buffer, "%s %s %s -d %d", PAMIXER, pamixerChannel(), boost > 1 ? "--allow-boost" : "", -inc);
+  } else {
+    return;
+  }
+  int res = system(buffer);
+  if(res != 0) {
+    fprintf(stderr, "Error while executing pamixer. Return value: %d - errno %d\n", res, errno);
   }
 }
