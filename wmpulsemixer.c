@@ -41,7 +41,7 @@
 #define BACKCOLOR   "#202020"
 #define LEDCOLOR    "#00c9c1"
 
-#define VERSION "0.1.0"
+#define VERSION "0.1.1"
 
 #undef CLAMP
 #define CLAMP(x, l, h) (((x) > (h)) ? (h) : (((x) < (l)) ? (l) : (x)))
@@ -567,11 +567,12 @@ void drawVolLevel()
 {
   int digits[4];
 
-  int vol = pamixerGetVolume();
-  digits[0] = (vol/100) ? 1 : 10;
-  digits[1] = (vol/10) == 10 ? 0 : (vol/10);
-  digits[2] = vol%10;
-  digits[3] = 10;
+  int vol = (int)(pamixerGetVolume() * boost);
+  digits[0] = vol < 100 ? 10 : (vol / 100) % 10; // 10 = empty
+  digits[1] = vol < 10 ? 10 : (vol / 10) % 10; // 10 = empty
+  digits[2] = vol % 10;
+  digits[3] = 10; // clears the last place, in case something else was written before
+                  // (would not happend with 3-letters channel names, but could happen if we use longer names later)
 
   for(int i=0; i<4; i++) {
     XCopyArea(d_display, pm_digits, pm_disp, gc_gc, 6*digits[i], 0, 6, 9, 5+(i*6), 5);
@@ -622,8 +623,8 @@ char* pamixerChannel() {
 
 int pamixerGetVolume()
 {
-  char buffer[1024];
-  sprintf(buffer, "%s %s --get-volume-human | sed 's/muted/0/'", PAMIXER, pamixerChannel());
+  char buffer[1024] = {0};
+  snprintf(buffer, 1024, "%s %s --get-volume-human | sed 's/muted/0/'", PAMIXER, pamixerChannel());
   FILE *fd = popen(buffer, "r");
   if(fd == NULL) {
     return 0;
@@ -635,13 +636,14 @@ int pamixerGetVolume()
     return (int)(volume / boost);
   } else {
     fprintf(stderr, "Unable to parse result from pamixer");
+    return 0;
   }
 }
 
 void pamixerSetVolume(int volume)
 {
-  char buffer[1024];
-  sprintf(buffer, "%s %s %s --set-volume %d", PAMIXER, pamixerChannel(), boost > 1 ? "--allow-boost" : "", (int)(volume * boost));
+  char buffer[1024] = {0};
+  snprintf(buffer, 1024, "%s %s %s --set-volume %d", PAMIXER, pamixerChannel(), boost > 1 ? "--allow-boost" : "", (int)(volume * boost));
   int res = system(buffer);
   if(res != 0) {
     fprintf(stderr, "Error while executing pamixer. Return value: %d - errno %d\n", res, errno);
@@ -650,11 +652,15 @@ void pamixerSetVolume(int volume)
 
 void pamixerIncreaseVolume(int inc)
 {
-  char buffer[1024];
+  char buffer[1024] = {0};
   if(inc > 0) {
-    sprintf(buffer, "%s %s %s -i %d", PAMIXER, pamixerChannel(), boost > 1 ? "--allow-boost" : "", inc);
+    // Even if we can increase the volume as much as we want, we limit it so that it doesn't go over what we can display.
+    if(curvol + inc > 100) {
+      inc = 100 - curvol;
+    }
+    snprintf(buffer, 1024, "%s %s %s -i %d", PAMIXER, pamixerChannel(), boost > 1 ? "--allow-boost" : "", inc);
   } else if(inc < 0) {
-    sprintf(buffer, "%s %s %s -d %d", PAMIXER, pamixerChannel(), boost > 1 ? "--allow-boost" : "", -inc);
+    snprintf(buffer, 1024, "%s %s %s -d %d", PAMIXER, pamixerChannel(), boost > 1 ? "--allow-boost" : "", -inc);
   } else {
     return;
   }

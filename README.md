@@ -1,4 +1,4 @@
-# wmpulsemixer (v0.1.0)
+# wmpulsemixer
 
 `wmpulsemixer` is a sleek volume control dockapp designed specifically for the Window Maker desktop environment. 
 
