@@ -44,7 +44,7 @@
 #define BACKCOLOR   "#202020"
 #define LEDCOLOR    "#00c9c1"
 
-#define VERSION "0.1.2"
+#define VERSION "0.1.3"
 
 // Pixmaps
 Pixmap pm_main;

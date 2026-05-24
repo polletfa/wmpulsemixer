@@ -15,7 +15,7 @@
 #include <math.h>
 
 // data
-double multiply = 100;
+double multiply = 100.0;
 
 pa_mainloop *mainloop;
 pa_context* context;
@@ -127,6 +127,10 @@ void pulseSetVolume(int channel, int volume) {
  * Mute/Unmute
  */
 void pulseToggleMute(int channel) {
+  if((channel == 0 && defaultSinkIndex < 0) || (channel == 1 && defaultSourceIndex < 0)) {
+    return; // not yet initialized
+  }
+
   pa_operation* op = NULL;
   if(channel == 0) {
     op = pa_context_set_sink_mute_by_index(context, defaultSinkIndex, !state.sink.muted, NULL, NULL);
