@@ -4,23 +4,27 @@
 
 It is a fork of the classic `wmsmixer` (which was a fork of `wmmixer`).
 This version completely strips out the obsolete Linux Open Sound System (OSS) kernel module backend (`/dev/mixer`)
-and replaces it with a native, user-space control layer for modern audio servers (PulseAudio and PipeWire) via `pamixer`.
+and replaces it with a native, user-space control layer for modern audio servers (PulseAudio and PipeWire).
 
 ## Requirements
-To build and run `wmpulsemixer`, you need the standard X11 development libraries and the `pamixer` command-line utility:
+To build and run `wmpulsemixer`, you need the standard X11 development libraries and the `libpulse` library:
 
 ```bash
 # Debian / Ubuntu / Mint
-sudo apt install build-essential x11proto-core-dev libx11-dev libxext-dev libxpm-dev pamixer
+sudo apt install build-essential x11proto-core-dev libx11-dev libxext-dev libxpm-dev libpulse-dev
 ```
 
 ## Compilation and Installation
-The project utilizes `Imake` to generate system-specific Makefiles. Build it by running:
 
 ```bash
-xmkmf
 make
 sudo make install
+```
+
+The binary will be installed in `/usr/bin/` unless you specify another location:
+
+```
+sudo make install PREFIX=/usr/local/bin/
 ```
 
 ## Usage

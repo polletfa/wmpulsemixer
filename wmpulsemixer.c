@@ -1,4 +1,4 @@
-// wmpulsemixer - A frontend to pamixer designed for WindowMaker
+// wmpulsemixer - A simple PulseAudio mixer for WindowMaker
 // Copyright (C) 2026  Fabien Pollet <mail@frmpollet.me> (wmpulsemixer)
 // Copyright (C) 2003  Damian Kramer <psiren@hibernaculum.net> (wmsmixer)
 // Copyright (C) 1998  Sam Hawker <shawkie@geocities.com> (wmmixer)
@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include <ctype.h>
 #include <stdbool.h>
+#include <poll.h>
 #include <errno.h>
 
 // X-Windows includes
@@ -28,6 +29,9 @@
 #include <X11/xpm.h>
 #include <X11/extensions/shape.h>
 
+// Includes - PulseAudio
+#include "pulse.h"
+
 // Defines
 #define BOOST       1
 #define WINDOWMAKER false
@@ -37,14 +41,10 @@
 #define ASTEPSIZE   56
 #define NAME        "wmpulsemixer"
 #define CLASS       "WmPulseMixer"
-#define PAMIXER     "/usr/bin/pamixer"
 #define BACKCOLOR   "#202020"
 #define LEDCOLOR    "#00c9c1"
 
-#define VERSION "0.1.1"
-
-#undef CLAMP
-#define CLAMP(x, l, h) (((x) > (h)) ? (h) : (((x) < (l)) ? (l) : (x)))
+#define VERSION "0.1.2"
 
 // Pixmaps
 Pixmap pm_main;
@@ -54,6 +54,8 @@ Pixmap pm_mask;
 Pixmap pm_icon;
 Pixmap pm_digits;
 Pixmap pm_chars;
+Pixmap pm_muted;
+Pixmap pm_muted_mask;
 
 // Xpm images
 #include "XPM/wmpulsemixer.xpm"
@@ -61,6 +63,7 @@ Pixmap pm_chars;
 #include "XPM/icons.xpm"
 #include "XPM/digits.xpm"
 #include "XPM/chars.xpm"
+#include "XPM/muted.xpm"
 
 // Variables for command-line arguments
 double boost=BOOST;
@@ -86,12 +89,10 @@ unsigned long color[4];
 
 int text_counter = 0;
 
-// Global variables
-// ----------------
-
 // Current state information
 int curchannel=0;
 int curvol;
+bool curmuted;
 
 // For buttons
 int btnstate=0;
@@ -105,9 +106,14 @@ int rpttimer=0;
 // For draggable volume control
 bool dragging=false;
 
+// Channels
 #define CHANNELS 2
 int icon[CHANNELS]={0, 1};
 char *small_labels[CHANNELS] = {"vol", "mic"};
+
+// Event loop
+struct pollfd* pollFDs = NULL;
+int pollFDsSize = 0;
 
 // Functions
 // ---------
@@ -126,18 +132,13 @@ void drawVolLevel();
 void drawText(char *text);
 void drawBtns(int btns);
 void drawBtn(int x, int y, int w, int h, bool down);
-void repaint();
-void update();
-void checkVol(bool forced);
+void repaint(bool force);
 void pressEvent(XButtonEvent *xev);
 void releaseEvent(XButtonEvent *xev);
 void motionEvent(XMotionEvent *xev);
 
-// Functions - pamixer control
-char* pamixerChannel();
-int pamixerGetVolume();
-void pamixerSetVolume(int volume);
-void pamixerIncreaseVolume(int increment);
+// Functions - event loop
+int eventLoopPoll(struct pollfd* ufds, unsigned long nfds, int timeout, void* userdata);
 
 // Implementation
 // --------------
@@ -169,6 +170,7 @@ int main(int argc, char **argv)
   xpmattr.closeness=40000;
   xpmattr.valuemask=XpmColorSymbols | XpmExactColors | XpmCloseness;
   XpmCreatePixmapFromData(d_display, w_root, wmpulsemixer_xpm, &pm_main, &pm_mask, &xpmattr);
+  XpmCreatePixmapFromData(d_display, w_root, muted_xpm, &pm_muted, &pm_muted_mask, &xpmattr);
   XpmCreatePixmapFromData(d_display, w_root, tile_xpm, &pm_tile, NULL, &xpmattr);
   XpmCreatePixmapFromData(d_display, w_root, icons_xpm, &pm_icon, NULL, &xpmattr);
   XpmCreatePixmapFromData(d_display, w_root, digits_xpm, &pm_digits, NULL, &xpmattr);
@@ -185,29 +187,36 @@ int main(int argc, char **argv)
   XCopyArea(d_display, pm_main, pm_disp, gc_gc, 0, 0, 64, 64, 0, 0);
   XSetClipMask(d_display, gc_gc, None);
 
-  // check for PAMIXER
-  FILE* pamixerfile=fopen(PAMIXER, "rb");
-  if(pamixerfile) {
-    fclose(pamixerfile);
-    pamixerfile = NULL;
-  } else {
-    perror(PAMIXER);
-    return 1;
-  }
-
-  checkVol(true);
+  // Connect to PulseAudio
+  pulseInit(NAME, boost);
 
   XEvent xev;
   XSelectInput(d_display, w_activewin, ExposureMask | ButtonPressMask | ButtonReleaseMask | ButtonMotionMask);
   XMapWindow(d_display, w_main);
+  repaint(true);
 
   bool done=false;
   while(!done){
+    // PulseAudio events
+    struct pulseState_t state = pulseIterate();
+    if(!state.running) {
+      done = true;
+      break;
+    }
+    int newvol = curchannel == 0 ? (state.sink.muted ? 0 : state.sink.volume) : (state.source.muted ? 0 : state.source.volume);
+    int newmuted = curchannel == 0 ? state.sink.muted : state.source.muted;
+    if(newvol != curvol || newmuted != curmuted) {
+      curvol = newvol;
+      curmuted = newmuted;
+      repaint(false);
+    }
+
+    // X11 events
     while(XPending(d_display)){
       XNextEvent(d_display, &xev);
       switch(xev.type){
       case Expose:
-        repaint();
+        repaint(false);
         break;
       case ButtonPress:
         pressEvent(&xev.xbutton);
@@ -236,25 +245,33 @@ int main(int argc, char **argv)
           curchannel=CHANNELS-1;
         if(curchannel>=CHANNELS)
           curchannel=0;
-        checkVol(true);
         rpttimer=0;
       }
+      repaint(true);
     }
-    else
-      checkVol(false);
 
     if(text_counter) {
       text_counter--;
       if(!text_counter) {
-        drawVolLevel();
-        repaint();
+        repaint(false);
       }
     }
 
     XFlush(d_display);
 
-    usleep(50000);
-  }
+    if(!done) {
+#ifdef DEBUG
+      printf("Poll...\n");
+#endif
+      struct pollfd x11fd = { ConnectionNumber(d_display), POLLIN, 0 };
+      if(pulseWait(eventLoopPoll, &x11fd) < 0) {
+        break;
+      }
+#ifdef DEBUG
+      printf("Waking up!\n");
+#endif
+    }
+}
   XFreeGC(d_display, gc_gc);
   XFreePixmap(d_display, pm_main);
   XFreePixmap(d_display, pm_tile);
@@ -264,6 +281,14 @@ int main(int argc, char **argv)
   XFreePixmap(d_display, pm_digits);
   XFreePixmap(d_display, pm_chars);
   freeXWin();
+
+  pulseCleanup();
+
+  if(pollFDs != NULL) {
+    free(pollFDs);
+    pollFDs = NULL;
+    pollFDsSize = 0;
+  }
   return 0;
 }
 
@@ -369,7 +394,7 @@ void scanArgs(int argc, char **argv)
 {
   for(int i=1;i<argc;i++){
     if(strcmp(argv[i], "-h")==0 || strcmp(argv[i], "--help")==0) {
-      fprintf(stderr, NAME " - A frontend to pamixer designed for WindowMaker\n");
+      fprintf(stderr, NAME " - A simple PulseAudio mixer for WindowMaker\n");
       fprintf(stderr, "Copyright (C) 2026  Fabien Pollet <mail@frmpollet.me> (wmpulsemixer)\n");
       fprintf(stderr, "Copyright (C) 2003  Damian Kramer <psiren@hibernaculum.net> (wmsmixer)\n");
       fprintf(stderr, "Copyright (C) 1998  Sam Hawker <shawkie@geocities.com> (wmmixer)\n");
@@ -438,68 +463,38 @@ void scanArgs(int argc, char **argv)
   }
 }
 
-void checkVol(bool forced)
-{
-  int vol = pamixerGetVolume();
-
-  if(forced){
-    curvol = vol;
-    update();
-    repaint();
-  }
-  else{
-    if(vol!=curvol){
-      curvol=vol;
-      drawMono();
-      drawVolLevel();
-    }
-    repaint();
-  }
-}
-
 void pressEvent(XButtonEvent *xev)
 {
-  if(xev->button == Button4 || xev->button == Button5) {
+  int x=xev->x-(winsize/2-32);
+  int y=xev->y-(winsize/2-32);
+
+  if(!curmuted && (xev->button == Button4 || xev->button == Button5)) {
     int inc;
     if(xev->button == Button4) inc = 4;
     else inc = -4;
 
-    pamixerIncreaseVolume(inc);
-    checkVol(false);
-    return;
-  }
-
-  int x=xev->x-(winsize/2-32);
-  int y=xev->y-(winsize/2-32);
-  if(x>=5 && y>=47 && x<=17 && y<=57){
+    pulseSetVolume(curchannel, curvol + inc > 100 ? 100 : curvol + inc); // we could set higher values but we limit to what we can display
+  } else if(x>=5 && y>=47 && x<=17 && y<=57){
     curchannel--;
     if(curchannel<0)
       curchannel=CHANNELS-1;
     btnstate |= BTNPREV;
     rpttimer=0;
     drawBtns(BTNPREV);
-    checkVol(true);
-    return;
-  }
-  if(x>=18 && y>=47 && x<=30 && y<=57){
+  } else if(x>=18 && y>=47 && x<=30 && y<=57){
     curchannel++;
     if(curchannel>=CHANNELS)
       curchannel=0;
     btnstate|=BTNNEXT;
     rpttimer=0;
     drawBtns(BTNNEXT);
-    checkVol(true);
-    return;
-  }
-  if(x>=37 && x<=56 && y>=8 && y<=56){
+  } else if(!curmuted && (x>=37 && x<=56 && y>=8 && y<=56)){
     int v=((60-y)*100)/(2*25);
     dragging=true;
-    pamixerSetVolume(v);
-    checkVol(false);
-    return;
-  }
-  if(x>=5 && y>=21 && x<=30 && y<=42) {
-    drawText(small_labels[curchannel]);
+    pulseSetVolume(curchannel, v);
+  } else if(x>=5 && y>=21 && x<=30 && y<=42) {
+    repaint(true);
+    pulseToggleMute(curchannel);
     return;
   }
 
@@ -510,7 +505,7 @@ void releaseEvent(XButtonEvent *xev)
   dragging=false;
   btnstate &= ~(BTNPREV | BTNNEXT);
   drawBtns(BTNPREV | BTNNEXT);
-  repaint();
+  repaint(false);
 }
 
 void motionEvent(XMotionEvent *xev)
@@ -521,24 +516,28 @@ void motionEvent(XMotionEvent *xev)
     int v=((60-y)*100)/(2*25);
     if(v<0)
       v=0;
-    pamixerSetVolume(v);
-    checkVol(false);
+    pulseSetVolume(curchannel, v);
   }
 }
 
-void repaint()
+void repaint(bool force)
 {
+  drawMono();
+  if(force || text_counter) {
+    drawText(small_labels[curchannel]);
+  } else {
+    drawVolLevel();
+  }
+  XCopyArea(d_display, pm_icon, pm_disp, gc_gc, icon[curchannel]*26, 0, 26, 24, 5, 19);
+  if(curmuted) {
+    XSetClipOrigin(d_display, gc_gc, 5, 19);
+    XSetClipMask(d_display, gc_gc, pm_muted_mask);
+    XCopyArea(d_display, pm_muted, pm_disp, gc_gc, 0, 0, 26, 24, 5, 19);
+    XSetClipMask(d_display, gc_gc, None);
+  }
   XCopyArea(d_display, pm_disp, w_activewin, gc_gc, 0, 0, 64, 64, winsize/2-32, winsize/2-32);
   XEvent xev;
   while(XCheckTypedEvent(d_display, Expose, &xev));
-}
-
-void update()
-{
-  drawText(small_labels[curchannel]);
-
-  XCopyArea(d_display, pm_icon, pm_disp, gc_gc, icon[curchannel]*26, 0, 26, 24, 5, 19);
-  drawMono();
 }
 
 void drawText(char *text)
@@ -566,8 +565,7 @@ void drawText(char *text)
 void drawVolLevel()
 {
   int digits[4];
-
-  int vol = (int)(pamixerGetVolume() * boost);
+  int vol = (int)(curvol * boost);
   digits[0] = vol < 100 ? 10 : (vol / 100) % 10; // 10 = empty
   digits[1] = vol < 10 ? 10 : (vol / 10) % 10; // 10 = empty
   digits[2] = vol % 10;
@@ -610,62 +608,25 @@ void drawBtn(int x, int y, int w, int h, bool down)
   }
 }
 
-char* pamixerChannel() {
-  switch(curchannel) {
-  case 0: // VOL
-    return "";
-  case 1: // MIC
-    return "--source 0";
-  default:
-    return "";
+int eventLoopPoll(struct pollfd* ufds, unsigned long nfds, int timeout, void* userdata) {
+  if(pollFDs == NULL) {
+    pollFDs = (struct pollfd*)malloc(sizeof(struct pollfd) * (nfds + 1));
+    pollFDsSize = nfds + 1;
+  } else if(pollFDsSize < nfds + 1) {
+    pollFDs = (struct pollfd*)realloc(pollFDs, sizeof(struct pollfd) * (nfds + 1));
+    pollFDsSize = nfds + 1;
   }
-}
 
-int pamixerGetVolume()
-{
-  char buffer[1024] = {0};
-  snprintf(buffer, 1024, "%s %s --get-volume-human | sed 's/muted/0/'", PAMIXER, pamixerChannel());
-  FILE *fd = popen(buffer, "r");
-  if(fd == NULL) {
-    return 0;
-  }
-  int volume;
-  int res = fscanf(fd, "%d", &volume);
-  pclose(fd);
-  if(res != EOF) {
-    return (int)(volume / boost);
-  } else {
-    fprintf(stderr, "Unable to parse result from pamixer");
-    return 0;
-  }
-}
+  memcpy(pollFDs, ufds, sizeof(struct pollfd) * nfds);
+  memcpy(&(pollFDs[nfds]), userdata, sizeof(struct pollfd));
 
-void pamixerSetVolume(int volume)
-{
-  char buffer[1024] = {0};
-  snprintf(buffer, 1024, "%s %s %s --set-volume %d", PAMIXER, pamixerChannel(), boost > 1 ? "--allow-boost" : "", (int)(volume * boost));
-  int res = system(buffer);
-  if(res != 0) {
-    fprintf(stderr, "Error while executing pamixer. Return value: %d - errno %d\n", res, errno);
-  }
-}
+  // if the channel name is being displayed, we don't wait indefinitely, because
+  // we want to draw the volume level after a few iterations of the loop.
+  // If the volume level is being displayed (text_counter == 0), then we can wait forever.
+  int pollRes = poll(pollFDs, nfds + 1, text_counter ? 50 : -1);
 
-void pamixerIncreaseVolume(int inc)
-{
-  char buffer[1024] = {0};
-  if(inc > 0) {
-    // Even if we can increase the volume as much as we want, we limit it so that it doesn't go over what we can display.
-    if(curvol + inc > 100) {
-      inc = 100 - curvol;
-    }
-    snprintf(buffer, 1024, "%s %s %s -i %d", PAMIXER, pamixerChannel(), boost > 1 ? "--allow-boost" : "", inc);
-  } else if(inc < 0) {
-    snprintf(buffer, 1024, "%s %s %s -d %d", PAMIXER, pamixerChannel(), boost > 1 ? "--allow-boost" : "", -inc);
-  } else {
-    return;
+  if(pollRes < 0) {
+    fprintf(stderr, "Poll failed: %s\n", strerror(errno));
   }
-  int res = system(buffer);
-  if(res != 0) {
-    fprintf(stderr, "Error while executing pamixer. Return value: %d - errno %d\n", res, errno);
-  }
+  return pollRes;
 }
