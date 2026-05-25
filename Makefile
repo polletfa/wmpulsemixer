@@ -1,6 +1,7 @@
 CFLAGS  += -D_DEFAULT_SOURCE $(shell pkg-config --cflags $(PKG_DEPS)) #-DDEBUG
 LDFLAGS += -lpulse -lX11 -lXpm -lXext -lm
-PREFIX = /usr/bin/
+DESTDIR =
+PREFIX = /usr/local
 
 CC = cc
 OBJS = wmpulsemixer.o pulse.o
@@ -25,10 +26,7 @@ wmpulsemixer.o: wmpulsemixer.c $(XPMS)
 clean:
 	rm -f $(OBJS) $(TARGET)
 
-distclean: clean
-	rm -f $(TARGET)
-
-install:
-	mkdir -p $(PREFIX)/ && install -m 755 $(TARGET) $(PREFIX)/
+install: $(TARGET)
+	install -Dm755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/$(TARGET)
 
 .PHONY: clean distclean install

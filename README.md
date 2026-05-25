@@ -21,10 +21,10 @@ make
 sudo make install
 ```
 
-The binary will be installed in `/usr/bin/` unless you specify another location:
+The binary will be installed in `/usr/local` unless you specify another location:
 
 ```
-sudo make install PREFIX=/usr/local/bin/
+sudo make install PREFIX=/usr
 ```
 
 ## Usage
