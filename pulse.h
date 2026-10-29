@@ -19,34 +19,41 @@ struct pulseVolume_t {
 };
 
 struct pulseState_t {
-  bool running;
   struct pulseVolume_t sink;
   struct pulseVolume_t source;
 };
 
 typedef int(*pollFunction_t)(struct pollfd* ufds, unsigned long nfds, int timeout, void* userdata);
 
+#define SINK 0
+#define SOURCE 1
+
+struct pulseDevice_t {
+  int deviceType;
+  bool isDefault;
+  char* name;
+  char* description;
+};
+
+struct pulseDeviceList_t {
+  struct pulseDevice_t* list;
+  int count;
+};
+
 /**
  * Initialise connection to PulseAudio server
  */
-void pulseInit(const char* name, double boost);
-
-/**
- * Handle all pending events
- * Return the current state
- */
-struct pulseState_t pulseIterate();
-
-/**
- * Wait using the provided function to poll.
- * Returns < 0 on error
- */
-int pulseWait(pollFunction_t pollFn, void* userData);
+void pulseInit(const char* name);
 
 /**
  * Cleanup
  */
 void pulseCleanup();
+
+/**
+ * Get state
+ */
+struct pulseState_t pulseGetState();
 
 /**
  * Set volume
@@ -57,5 +64,15 @@ void pulseSetVolume(int channel, int volume);
  * Mute/unmute
  */
 void pulseToggleMute(int channel);
+
+/**
+ * Get list of devices for a channel (0 = sinks, 1 = sources)
+ */
+const struct pulseDeviceList_t* pulseGetDevices(int channel);
+
+/**
+ * Select a device as new default source or sink
+ */
+void pulseSelectDevice(struct pulseDevice_t* device);
 
 #endif

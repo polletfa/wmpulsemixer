@@ -1,10 +1,11 @@
-CFLAGS  += -D_DEFAULT_SOURCE $(shell pkg-config --cflags $(PKG_DEPS)) #-DDEBUG
-LDFLAGS += -lpulse -lX11 -lXpm -lXext -lm
+PKG_DEPS = x11 xext xpm libpulse libpulse-mainloop-glib gtk+-3.0
+CFLAGS  += -D_DEFAULT_SOURCE $(shell pkg-config --cflags $(PKG_DEPS))
+LDFLAGS += -lm $(shell pkg-config --libs $(PKG_DEPS))
 DESTDIR =
 PREFIX = /usr/local
 
 CC = cc
-OBJS = wmpulsemixer.o pulse.o
+OBJS = wmpulsemixer.o pulse.o menu.o
 TARGET = wmpulsemixer
 
 XPMS = XPM/chars.xpm \

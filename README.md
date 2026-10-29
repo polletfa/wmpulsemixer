@@ -7,11 +7,11 @@ This version completely strips out the obsolete Linux Open Sound System (OSS) ke
 and replaces it with a native, user-space control layer for modern audio servers (PulseAudio and PipeWire).
 
 ## Requirements
-To build and run `wmpulsemixer`, you need the standard X11 development libraries and the `libpulse` library:
+To build and run `wmpulsemixer`, you need the standard X11 development libraries, GTK 3 and the `libpulse` library:
 
 ```bash
 # Debian / Ubuntu / Mint
-sudo apt install build-essential x11proto-core-dev libx11-dev libxext-dev libxpm-dev libpulse-dev
+sudo apt install build-essential x11proto-core-dev libx11-dev libxext-dev libxpm-dev libpulse-dev libgtk-3-dev
 ```
 
 ## Compilation and Installation
@@ -37,6 +37,13 @@ wmpulsemixer -boost 1.5   # Allow volume up to 150%
 ```
 
 See `wmpulsemixer --help` for a full list of options.
+
+## Features
+
+- Volume management for output and input channels.
+- Mute/Unmute through left-click on the channel icon.
+- Change sink (output) or source (input) through right-click on the channel icon.
+- Software boost to allow a volume over 100%.
 
 ## Authors & Credits
 - **Fabien Pollet** (2026) — Creator of `wmpulsemixer` (PulseAudio/PipeWire modern rewrite).

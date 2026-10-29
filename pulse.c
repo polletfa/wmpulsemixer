@@ -9,43 +9,54 @@
 
 #include "pulse.h"
 
-#include <pulse/pulseaudio.h>
-
 #include <stdio.h>
 #include <math.h>
+#include <string.h>
+
+#include <pulse/pulseaudio.h>
+#include <pulse/glib-mainloop.h>
+
+#include <gtk/gtk.h>
+
+gboolean repaintEvent(gpointer data); // defined in wmpulsemixer.c
 
 // data
 double multiply = 100.0;
+extern bool verbose; // defined in wmpulsemixer.c
+extern double boost; // defined in wmpulsemixer.c
 
-pa_mainloop *mainloop;
+pa_glib_mainloop* mainloop;
 pa_context* context;
 
 int defaultSinkIndex = -1;
 int defaultSinkChannels = 1;
+struct pulseDeviceList_t sinkList = { NULL, 0 };
 
 int defaultSourceIndex = -1;
 int defaultSourceChannels = 1;
+struct pulseDeviceList_t sourceList = { NULL, 0 };
 
-struct pulseState_t state = { true, {false, 0}, {false, 0} };
+struct pulseState_t state = { {false, 0}, {false, 0} };
 
 // forward declarations for callbacks (not in the header file)
 void callbackContextState(pa_context* c, void* userdata);
-void callbackContextSubscribe(pa_context *c, pa_subscription_event_type_t t, uint32_t idx, void *userdata);
-void callbackSinkInfo(pa_context *c, const pa_sink_info *info, int eol, void *userdata);
-void callbackSourceInfo(pa_context *c, const pa_source_info *info, int eol, void *userdata);
-void callbackServerInfo(pa_context *c, const pa_server_info *info, void *userdata);
+void callbackContextSubscribe(pa_context* c, pa_subscription_event_type_t t, uint32_t idx, void* userdata);
+void callbackSinkInfo(pa_context* c, const pa_sink_info* info, int eol, void* userdata);
+void callbackSourceInfo(pa_context* c, const pa_source_info* info, int eol, void* userdata);
+void callbackServerInfo(pa_context* c, const pa_server_info* info, void* userdata);
+void callbackSetDevice(pa_context* c, int success, void* userdata);
 
 /**
  * Initialise connection to PulseAudio server
  */
-void pulseInit(const char* name, double boost) {
+void pulseInit(const char* name) {
   bool success;
   multiply = 100.0 / (boost * PA_VOLUME_NORM);
 
-  mainloop = pa_mainloop_new();
+  mainloop = pa_glib_mainloop_new(g_main_context_default());
   success = mainloop != NULL;
   if(success) {
-    context = pa_context_new(pa_mainloop_get_api(mainloop), name);
+    context = pa_context_new(pa_glib_mainloop_get_api(mainloop), name);
     success = context != NULL;
   }
   if(success) {
@@ -64,36 +75,20 @@ void pulseInit(const char* name, double boost) {
 }
 
 /**
- * Handle all pending events.
- * Return the current state
- */
-struct pulseState_t pulseIterate() {
-  while(pa_mainloop_iterate(mainloop, 0, NULL) > 0)
-    ; // loop until no event has been handled or there was an error
-  return state;
-}
-
-/**
- * Wait using the provided function.
- */
-int pulseWait(pollFunction_t pollFn, void* userData) {
-  pa_mainloop_set_poll_func(mainloop, pollFn, userData);
-  int res = pa_mainloop_iterate(mainloop, 0, NULL);
-  pa_mainloop_set_poll_func(mainloop, NULL, NULL);
-  if(res < 0) {
-    fprintf(stderr, "Error on pulseWait: %s\n", pa_strerror(pa_context_errno(context)));
-    return res;
-  }
-  return 0;
-}
-
-/**
  * Cleanup
  */
 void pulseCleanup() {
   pa_context_disconnect(context);
   pa_context_unref(context);
-  pa_mainloop_free(mainloop);
+  pa_glib_mainloop_free(mainloop);
+}
+
+/**
+ * Get state
+ */
+struct pulseState_t pulseGetState()
+{
+  return state;
 }
 
 /**
@@ -109,9 +104,10 @@ void pulseSetVolume(int channel, int volume) {
   pa_cvolume_init(&cvol);
   pa_cvolume_set(&cvol, channel == 0 ? defaultSinkChannels : defaultSourceChannels, pa_volume);
 
-#ifdef DEBUG
+  if(verbose) {
   printf("Set %d to %d\n", channel, volume);
-#endif
+  }
+
   pa_operation* op = NULL;
   if(channel == 0) {
     op = pa_context_set_sink_volume_by_index(context, defaultSinkIndex, &cvol, NULL, NULL);
@@ -143,15 +139,35 @@ void pulseToggleMute(int channel) {
 }
 
 /**
+ * Get list of devices for a channel (0 = sinks, 1 = sources)
+ */
+const struct pulseDeviceList_t* pulseGetDevices(int channel) {
+  return channel == 0 ? &sinkList : &sourceList;
+}
+
+/**
+ * Select a device as new default source or sink
+ */
+void pulseSelectDevice(struct pulseDevice_t* device) {
+  if(device->deviceType == SINK && !device->isDefault) {
+    if(verbose) printf("Change sink to: %s (%s)\n", device->name, device->description);
+    pa_context_set_default_sink(context, device->name, callbackSetDevice, NULL);
+  } else if(device->deviceType == SOURCE && !device->isDefault) {
+    if(verbose) printf("Change source to: %s (%s)\n", device->name, device->description);
+    pa_context_set_default_source(context, device->name, callbackSetDevice, NULL);
+  }
+}
+
+/**
  * Callback when the state of the context changes.
  * Used to react on connect/disconnect
  */
 void callbackContextState(pa_context* c, void* userdata) {
   switch (pa_context_get_state(c)) {
   case PA_CONTEXT_READY: {
-#ifdef DEBUG
-    printf("PulseAudio connection ready.\n");
-#endif
+    if(verbose) {
+      printf("PulseAudio connection ready.\n");
+    }
 
     pa_operation *op = pa_context_get_server_info(context, callbackServerInfo, NULL);
     if (op) pa_operation_unref(op);
@@ -159,15 +175,16 @@ void callbackContextState(pa_context* c, void* userdata) {
     pa_context_set_subscribe_callback(c, callbackContextSubscribe, NULL);
     op = pa_context_subscribe(c,PA_SUBSCRIPTION_MASK_SINK | PA_SUBSCRIPTION_MASK_SOURCE | PA_SUBSCRIPTION_MASK_SERVER, NULL, NULL);
     if (op) pa_operation_unref(op);
+
     break;
   }
 
   case PA_CONTEXT_FAILED:
   case PA_CONTEXT_TERMINATED:
-#ifdef DEBUG
-    fprintf(stderr, "PulseAudio connection lost.\n");
-#endif
-    state.running = false;
+    if (verbose) {
+      fprintf(stderr, "PulseAudio connection lost.\n");
+    }
+    gtk_main_quit();
     break;
 
   default:
@@ -185,21 +202,21 @@ void callbackContextSubscribe(pa_context *c, pa_subscription_event_type_t t, uin
   bool isChange = (t & PA_SUBSCRIPTION_EVENT_TYPE_MASK) == PA_SUBSCRIPTION_EVENT_CHANGE;
 
   if(isServer) {
-#ifdef DEBUG
-    printf("Server event\n");
-#endif
+    if(verbose) {
+      printf("Server event\n");
+    }
     pa_operation *op = pa_context_get_server_info(context, callbackServerInfo, NULL);
     if (op) pa_operation_unref(op);
   } else if(isChange && isSink && defaultSinkIndex == idx) {
-#ifdef DEBUG
-    printf("Default sink volume changed\n");
-#endif
+    if(verbose) {
+      printf("Default sink volume changed\n");
+    }
     pa_operation *op = pa_context_get_sink_info_by_index(c, idx, callbackSinkInfo, NULL);
     if (op) pa_operation_unref(op);
   } else if(isChange && isSource && defaultSourceIndex == idx) {
-#ifdef DEBUG
-    printf("Default source volume changed\n");
-#endif
+    if(verbose) {
+      printf("Default source volume changed\n");
+    }
     pa_operation *op = pa_context_get_source_info_by_index(c, idx, callbackSourceInfo, NULL);
     if (op) pa_operation_unref(op);
   }
@@ -209,20 +226,51 @@ void callbackContextSubscribe(pa_context *c, pa_subscription_event_type_t t, uin
  * Callback when sink info is received (requested when server info is received or the volume of the sink changes)
  */
 void callbackSinkInfo(pa_context *c, const pa_sink_info *info, int eol, void *userdata) {
-  if (eol < 0 || info == NULL) return;
+  if(eol != 0 || info == NULL || (info->active_port && info->active_port->available == PA_PORT_AVAILABLE_NO)) return;
 
-#ifdef DEBUG
-  printf("Received sink info\n");
-#endif
-  defaultSinkIndex = info->index;
-  defaultSinkChannels = info->channel_map.channels;
+  bool isDefault = userdata != NULL ? strcmp(userdata, info->name) == 0 : true;
+  pa_volume_t rawVol = pa_cvolume_avg(&info->volume);
+  int volume = (int)(round(rawVol * multiply));
 
-  state.sink.muted = info->mute;
-  pa_volume_t avg_vol = pa_cvolume_avg(&info->volume);
-  state.sink.volume = (int)(round(avg_vol * multiply));
-#ifdef DEBUG
-  printf("Volume: %d (muted = %d) - PA_VOLUME_NORM: %d - normalized: %d\n", avg_vol, state.sink.muted, PA_VOLUME_NORM, state.sink.volume);
-#endif
+  if(verbose) {
+    if(isDefault) printf("\033[32;1m");
+    printf("Sink #%u\n", info->index);
+    printf("  Name:        %s\n", info->name);
+    if(userdata) {
+      printf("  Default:     %s\n", isDefault ? "Yes": "No");
+    }
+    printf("  Description: %s\n", info->description);
+    printf("  Sample Rate: %u Hz\n", info->sample_spec.rate);
+    printf("  Channels:    %u\n", info->sample_spec.channels);
+    printf("  Muted:       %s\n", info->mute ? "Yes" : "No");
+    printf("  Volume:      %d%%\n", volume);
+    if(isDefault) printf("\033[0m");
+  }
+
+  if(userdata) {
+    sinkList.list = (struct pulseDevice_t*)realloc(sinkList.list, sizeof(struct pulseDevice_t) * (sinkList.count + 1));
+    sinkList.list[sinkList.count].deviceType = SINK;
+    sinkList.list[sinkList.count].name = malloc(strlen(info->name) + 1);
+    strcpy(sinkList.list[sinkList.count].name, info->name);
+    sinkList.list[sinkList.count].description = malloc(strlen(info->description) + 1);
+    strcpy(sinkList.list[sinkList.count].description, info->description);
+    sinkList.list[sinkList.count].isDefault = isDefault;
+    sinkList.count ++;
+  }
+
+  if(isDefault) {
+    defaultSinkIndex = info->index;
+    defaultSinkChannels = info->channel_map.channels;
+
+    state.sink.muted = info->mute;
+    state.sink.volume = volume;
+  }
+
+  if(verbose) {
+    printf("\n");
+  }
+
+  g_idle_add(repaintEvent, NULL);
 }
 
 /**
@@ -231,18 +279,56 @@ void callbackSinkInfo(pa_context *c, const pa_sink_info *info, int eol, void *us
 void callbackSourceInfo(pa_context *c, const pa_source_info *info, int eol, void *userdata) {
   if (eol < 0 || info == NULL) return;
 
-#ifdef DEBUG
-  printf("Received source info\n");
-#endif
-  defaultSourceIndex = info->index;
-  defaultSourceChannels = info->channel_map.channels;
+  if(info->monitor_of_sink != PA_INVALID_INDEX) {
+    if(verbose) {
+      printf("Source #%u ignored (%s)\n\n", info->index, info->description);
+    }
+    return;
+  }
 
-  state.source.muted = info->mute;
-  pa_volume_t avg_vol = pa_cvolume_avg(&info->volume);
-  state.source.volume = (int)(round(avg_vol * multiply));
-#ifdef DEBUG
-  printf("Volume: %d (muted = %d) - PA_VOLUME_NORM: %d - normalized: %d\n", avg_vol, state.source.muted, PA_VOLUME_NORM, state.source.volume);
-#endif
+  bool isDefault = userdata != NULL ? strcmp(userdata, info->name) == 0 : true;
+  pa_volume_t rawVol = pa_cvolume_avg(&info->volume);
+  int volume = (int)(round(rawVol * multiply));
+
+  if(verbose) {
+    if(isDefault) printf("\033[32;1m");
+    printf("Source #%u\n", info->index);
+    printf("  Name:        %s\n", info->name);
+    if(userdata) {
+      printf("  Default:     %s\n", isDefault ? "Yes": "No");
+    }
+    printf("  Description: %s\n", info->description);
+    printf("  Sample Rate: %u Hz\n", info->sample_spec.rate);
+    printf("  Channels:    %u\n", info->sample_spec.channels);
+    printf("  Muted:       %s\n", info->mute ? "Yes" : "No");
+    printf("  Volume:      %d%%\n", volume);
+    if(isDefault) printf("\033[0m");
+  }
+
+  if(userdata) {
+    sourceList.list = (struct pulseDevice_t*)realloc(sourceList.list, sizeof(struct pulseDevice_t) * (sourceList.count + 1));
+    sourceList.list[sourceList.count].deviceType = SOURCE;
+    sourceList.list[sourceList.count].name = malloc(strlen(info->name) + 1);
+    strcpy(sourceList.list[sourceList.count].name, info->name);
+    sourceList.list[sourceList.count].description = malloc(strlen(info->description) + 1);
+    strcpy(sourceList.list[sourceList.count].description, info->description);
+    sourceList.list[sourceList.count].isDefault = isDefault;
+    sourceList.count ++;
+  }
+
+  if(isDefault) {
+    defaultSourceIndex = info->index;
+    defaultSourceChannels = info->channel_map.channels;
+
+    state.source.muted = info->mute;
+    state.source.volume = volume;
+  }
+
+  if(verbose) {
+    printf("\n");
+  }
+
+  g_idle_add(repaintEvent, NULL);
 }
 
 /**
@@ -251,12 +337,41 @@ void callbackSourceInfo(pa_context *c, const pa_source_info *info, int eol, void
 void callbackServerInfo(pa_context *c, const pa_server_info *info, void *userdata) {
   if (!info) return;
 
-#ifdef DEBUG
-  printf("Received server info\n");
-#endif
-  pa_operation *op = pa_context_get_sink_info_by_name(c, info->default_sink_name, callbackSinkInfo, NULL);
+  if(verbose) {
+    printf("Received server info\n");
+  }
+
+  if(sinkList.list != NULL) {
+    for(int i = 0; i < sinkList.count; ++i) {
+      free(sinkList.list[i].name);
+      free(sinkList.list[i].description);
+    }
+    free(sinkList.list);
+    sinkList.list = NULL;
+  }
+  sinkList.count = 0;
+  if(sourceList.list != NULL) {
+    for(int i = 0; i < sourceList.count; ++i) {
+      free(sourceList.list[i].name);
+      free(sourceList.list[i].description);
+    }
+    free(sourceList.list);
+    sourceList.list = NULL;
+  }
+  sourceList.count = 0;
+
+  pa_operation *op = pa_context_get_source_info_list(c, callbackSourceInfo, (void*)info->default_source_name);
   if (op) pa_operation_unref(op);
 
-  op = pa_context_get_source_info_by_name(c, info->default_source_name, callbackSourceInfo, NULL);
+  op = pa_context_get_sink_info_list(c, callbackSinkInfo, (void*)info->default_sink_name);
   if (op) pa_operation_unref(op);
+}
+
+/**
+ * Callback for set_default_sink and set_default_source
+ */
+void callbackSetDevice(pa_context* c, int success, void* userdata) {
+  if(verbose) {
+    printf("Change device: %s\n", success ? "success" : "failed");
+  }
 }

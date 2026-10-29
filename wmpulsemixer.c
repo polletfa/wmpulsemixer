@@ -18,8 +18,6 @@
 #include <unistd.h>
 #include <ctype.h>
 #include <stdbool.h>
-#include <poll.h>
-#include <errno.h>
 
 // X-Windows includes
 #include <X11/X.h>
@@ -29,14 +27,20 @@
 #include <X11/xpm.h>
 #include <X11/extensions/shape.h>
 
-// Includes - PulseAudio
+// GTK
+#include <gtk/gtk.h>
+#include <gtk/gtkx.h>
+
+// Includes - Other components
 #include "pulse.h"
+#include "menu.h"
 
 // Defines
 #define BOOST       1
 #define WINDOWMAKER false
 #define USESHAPE    false
 #define AFTERSTEP   false
+#define VERBOSE     false
 #define NORMSIZE    64
 #define ASTEPSIZE   56
 #define NAME        "wmpulsemixer"
@@ -44,7 +48,7 @@
 #define BACKCOLOR   "#202020"
 #define LEDCOLOR    "#00c9c1"
 
-#define VERSION "0.1.4"
+#define VERSION "0.2.0"
 
 // Pixmaps
 Pixmap pm_main;
@@ -70,6 +74,7 @@ double boost=BOOST;
 bool wmaker=WINDOWMAKER;
 bool ushape=USESHAPE;
 bool astep=AFTERSTEP;
+bool verbose=VERBOSE;
 char display[256]="";
 char position[256]="";
 int winsize;
@@ -87,10 +92,11 @@ Window w_activewin;
 GC gc_gc;
 unsigned long color[4];
 
-int text_counter = 0;
+#define SHOW_TEXT_INTERVAL 2000
+bool showText = false;
 
 // Current state information
-int curchannel=0;
+int curchannel = SINK;
 int curvol;
 bool curmuted;
 
@@ -100,8 +106,8 @@ int btnstate=0;
 #define BTNPREV  2
 
 // For repeating next and prev buttons
-#define RPTINTERVAL   5
-int rpttimer=0;
+#define REPEAT_INTERVAL 500
+guint repeatTimeoutId = 0;
 
 // For draggable volume control
 bool dragging=false;
@@ -111,10 +117,6 @@ bool dragging=false;
 int icon[CHANNELS]={0, 1};
 char *small_labels[CHANNELS] = {"vol", "mic"};
 
-// Event loop
-struct pollfd* pollFDs = NULL;
-int pollFDsSize = 0;
-
 // Functions
 // ---------
 
@@ -123,9 +125,9 @@ void scanArgs(int argc, char **argv);
 
 // Functions - interface
 void initXWin(int argc, char **argv);
+void initDisplay();
 void freeXWin();
 void createWin(Window *win, int x, int y);
-unsigned long getColor(char *colorname);
 unsigned long mixColor(char *colorname1, int prop1, char *colorname2, int prop2);
 void drawMono();
 void drawVolLevel();
@@ -133,25 +135,131 @@ void drawText(char *text);
 void drawBtns(int btns);
 void drawBtn(int x, int y, int w, int h, bool down);
 void repaint(bool force);
-void pressEvent(XButtonEvent *xev);
-void releaseEvent(XButtonEvent *xev);
-void motionEvent(XMotionEvent *xev);
+GdkFilterReturn pressEvent(int x, int y, int button, int time);
+GdkFilterReturn releaseEvent();
+GdkFilterReturn motionEvent(int x, int y);
 
-// Functions - event loop
-int eventLoopPoll(struct pollfd* ufds, unsigned long nfds, int timeout, void* userdata);
+// GTK event handlers
+void gdkEventHandler(GdkEvent* event, gpointer data);
+GdkFilterReturn xEventHandler(GdkXEvent* xevent, GdkEvent* event, gpointer data);
+gboolean repaintEvent(gpointer data);
+gboolean showTextTimeout(gpointer data);
+gboolean repeatTimeout(gpointer data);
 
 // Implementation
 // --------------
 
 int main(int argc, char **argv)
 {
+  setenv("GDK_CORE_DEVICE_EVENTS", "1", 1);
+
   scanArgs(argc, argv);
   initXWin(argc, argv);
+  initDisplay();
 
+  // Connect to PulseAudio
+  pulseInit(NAME);
+
+  // setup GTK loop
+  GdkDisplay *gdk_disp = gdk_display_get_default();
+  GdkWindow *gdk_win = gdk_x11_window_foreign_new_for_display(gdk_disp, w_activewin);
+  if (!gdk_win) {
+    fprintf(stderr, "Fehler: Konnte das X11-Fenster nicht bei GDK registrieren.\n");
+    exit(1);
+  }
+  gdk_window_add_filter(gdk_win, xEventHandler, NULL);
+  g_idle_add(repaintEvent, NULL);
+  gdk_event_handler_set(gdkEventHandler, NULL, NULL);
+  gtk_main();
+
+  XFreeGC(d_display, gc_gc);
+  XFreePixmap(d_display, pm_main);
+  XFreePixmap(d_display, pm_tile);
+  XFreePixmap(d_display, pm_disp);
+  XFreePixmap(d_display, pm_mask);
+  XFreePixmap(d_display, pm_icon);
+  XFreePixmap(d_display, pm_digits);
+  XFreePixmap(d_display, pm_chars);
+  freeXWin();
+
+  pulseCleanup();
+  return 0;
+}
+
+gboolean repaintEvent(gpointer data) {
+  if(verbose) printf("repaintEvent\n");
+  repaint(true);
+  return FALSE;
+}
+
+gboolean showTextTimeout(gpointer data) {
+  if(verbose) printf("showTextTimeout\n");
+  showText = false;
+  repaint(false);
+  return FALSE;
+}
+
+gboolean repeatTimeout(gpointer data) {
+  if(btnstate & (BTNPREV | BTNNEXT)){
+    if(verbose) printf("repeatTimeout: still pressed, repeat\n");
+    if(btnstate & BTNNEXT)
+      curchannel++;
+    else
+      curchannel--;
+    if(curchannel<0)
+      curchannel=CHANNELS-1;
+    if(curchannel>=CHANNELS)
+      curchannel=0;
+    repaint(true);
+    return TRUE;
+  } else {
+    if(verbose) printf("repeatTimeout: released, no repeat\n");
+    repeatTimeoutId = 0;
+    return FALSE;
+  }
+}
+
+void gdkEventHandler(GdkEvent *event, gpointer data) {
+  switch(event->type) {
+  case GDK_DELETE:
+    if (verbose) {
+      printf("GDK_DELETE empfangen. Beende GTK-Mainloop sauber...\n");
+    }
+    gtk_main_quit();
+    return;
+  default:
+    break;
+  }
+
+  gtk_main_do_event(event);
+}
+
+GdkFilterReturn xEventHandler(GdkXEvent* xevent, GdkEvent* event, gpointer data) {
+  XEvent* xev = (XEvent*)xevent;
+
+  switch(xev->type) {
+  case ButtonPress:
+    return pressEvent(xev->xbutton.x, xev->xbutton.y, xev->xbutton.button, xev->xbutton.time);
+  case ButtonRelease:
+    return releaseEvent();
+  case MotionNotify:
+    return motionEvent(xev->xmotion.x, xev->xmotion.y);
+  case Expose:
+    repaint(true);
+    break;
+  default:
+    break;
+  }
+
+  return GDK_FILTER_CONTINUE;
+}
+
+void initDisplay()
+{
   XGCValues gcv;
   unsigned long gcm;
   gcm=GCGraphicsExposures;
-  gcv.graphics_exposures=false;
+  gcv.graphics_exposures=true;
   gc_gc=XCreateGC(d_display, w_root, gcm, &gcv);
 
   color[0]=mixColor(ledcolor, 0, backcolor, 100);
@@ -187,119 +295,32 @@ int main(int argc, char **argv)
   XCopyArea(d_display, pm_main, pm_disp, gc_gc, 0, 0, 64, 64, 0, 0);
   XSetClipMask(d_display, gc_gc, None);
 
-  // Connect to PulseAudio
-  pulseInit(NAME, boost);
-
-  XEvent xev;
-  XSelectInput(d_display, w_activewin, ExposureMask | ButtonPressMask | ButtonReleaseMask | ButtonMotionMask);
+  XSelectInput(d_display, w_activewin, ExposureMask | ButtonPressMask | ButtonReleaseMask | ButtonMotionMask
+                                       | StructureNotifyMask | VisibilityChangeMask);
   XMapWindow(d_display, w_main);
   repaint(true);
-
-  bool done=false;
-  while(!done){
-    // PulseAudio events
-    struct pulseState_t state = pulseIterate();
-    if(!state.running) {
-      done = true;
-      break;
-    }
-    int newvol = curchannel == 0 ? (state.sink.muted ? 0 : state.sink.volume) : (state.source.muted ? 0 : state.source.volume);
-    int newmuted = curchannel == 0 ? state.sink.muted : state.source.muted;
-    if(newvol != curvol || newmuted != curmuted) {
-      curvol = newvol;
-      curmuted = newmuted;
-      repaint(false);
-    }
-
-    // X11 events
-    while(XPending(d_display)){
-      XNextEvent(d_display, &xev);
-      switch(xev.type){
-      case Expose:
-        repaint(false);
-        break;
-      case ButtonPress:
-        pressEvent(&xev.xbutton);
-        break;
-      case ButtonRelease:
-        releaseEvent(&xev.xbutton);
-        break;
-      case MotionNotify:
-        motionEvent(&xev.xmotion);
-        break;
-      case ClientMessage:
-        if(xev.xclient.data.l[0]==deleteWin)
-          done=true;
-        break;
-      }
-    }
-
-    if(btnstate & (BTNPREV | BTNNEXT)){
-      rpttimer++;
-      if(rpttimer>=RPTINTERVAL){
-        if(btnstate & BTNNEXT)
-          curchannel++;
-        else
-          curchannel--;
-        if(curchannel<0)
-          curchannel=CHANNELS-1;
-        if(curchannel>=CHANNELS)
-          curchannel=0;
-        rpttimer=0;
-      }
-      repaint(true);
-    }
-
-    if(text_counter) {
-      text_counter--;
-      if(!text_counter) {
-        repaint(false);
-      }
-    }
-
-    XFlush(d_display);
-
-    if(!done) {
-#ifdef DEBUG
-      printf("Poll...\n");
-#endif
-      struct pollfd x11fd = { ConnectionNumber(d_display), POLLIN, 0 };
-      if(pulseWait(eventLoopPoll, &x11fd) < 0) {
-        break;
-      }
-#ifdef DEBUG
-      printf("Waking up!\n");
-#endif
-    }
-}
-  XFreeGC(d_display, gc_gc);
-  XFreePixmap(d_display, pm_main);
-  XFreePixmap(d_display, pm_tile);
-  XFreePixmap(d_display, pm_disp);
-  XFreePixmap(d_display, pm_mask);
-  XFreePixmap(d_display, pm_icon);
-  XFreePixmap(d_display, pm_digits);
-  XFreePixmap(d_display, pm_chars);
-  freeXWin();
-
-  pulseCleanup();
-
-  if(pollFDs != NULL) {
-    free(pollFDs);
-    pollFDs = NULL;
-    pollFDsSize = 0;
-  }
-  return 0;
 }
 
 void initXWin(int argc, char **argv)
 {
-  winsize=astep ? ASTEPSIZE : NORMSIZE;
+  g_set_prgname(NAME);
+  gtk_parse_args(&argc, &argv);
 
-  if((d_display=XOpenDisplay(display))==NULL){
-    fprintf(stderr,"%s : Unable to open X display '%s'.\n", NAME, XDisplayName(display));
+  GdkDisplayManager *manager = gdk_display_manager_get();
+  GdkDisplay* gdk_disp = gdk_display_manager_open_display(manager, (display[0] != '\0') ? display : NULL);
+  if (!gdk_disp) {
+    const char *disp_name = (display[0] != '\0') ? display : getenv("DISPLAY");
+    fprintf(stderr, "%s : Unable to open X display '%s'.\n", NAME, disp_name ? disp_name : "NULL");
     exit(1);
   }
+  gdk_display_manager_set_default_display(manager, gdk_disp);
+
+  gtk_init(&argc, &argv);
+
+  winsize=astep ? ASTEPSIZE : NORMSIZE;
+
+  d_display = GDK_DISPLAY_XDISPLAY(gdk_disp);
+
   _XA_GNUSTEP_WM_FUNC=XInternAtom(d_display, "_GNUSTEP_WM_FUNCTION", false);
   deleteWin=XInternAtom(d_display, "WM_DELETE_WINDOW", false);
 
@@ -350,7 +371,6 @@ void freeXWin()
   XDestroyWindow(d_display, w_main);
   if(wmaker)
     XDestroyWindow(d_display, w_icon);
-  XCloseDisplay(d_display);
 }
 
 void createWin(Window *win, int x, int y)
@@ -360,18 +380,6 @@ void createWin(Window *win, int x, int y)
   classHint.res_name=NAME;
   classHint.res_class=CLASS;
   XSetClassHint(d_display, *win, &classHint);
-}
-
-unsigned long getColor(char *colorname)
-{
-  XColor color;
-  XWindowAttributes winattr;
-  XGetWindowAttributes(d_display, w_root, &winattr);
-  color.pixel=0;
-  XParseColor(d_display, winattr.colormap, colorname, &color);
-  color.flags=DoRed | DoGreen | DoBlue;
-  XAllocColor(d_display, winattr.colormap, &color);
-  return color.pixel;
 }
 
 unsigned long mixColor(char *colorname1, int prop1, char *colorname2, int prop2)
@@ -412,7 +420,9 @@ void scanArgs(int argc, char **argv)
       fprintf(stderr, "   -l led_color           use the specified color for led display\n");
       fprintf(stderr, "   -b back_color          use the specified color for backgrounds\n");
       fprintf(stderr, "   -position position     set window position   (see X manual pages)\n");
-      fprintf(stderr, "   -display display       select target display (see X manual pages)\n\n");
+      fprintf(stderr, "   -display display       select target display (see X manual pages)\n");
+      fprintf(stderr, "   -verbose               enable debug information\n");
+      fprintf(stderr, "\n");
       exit(0);
     }
     if(strcmp(argv[i], "-v")==0 || strcmp(argv[i], "--version")==0) {
@@ -427,11 +437,11 @@ void scanArgs(int argc, char **argv)
       continue;
     }
     if(strcmp(argv[i], "-w")==0)
-      wmaker=!wmaker;
+      wmaker=!WINDOWMAKER;
     if(strcmp(argv[i], "-s")==0)
-      ushape=!ushape;
+      ushape=!USESHAPE;
     if(strcmp(argv[i], "-a")==0)
-      astep=!astep;
+      astep=!AFTERSTEP;
     if(strcmp(argv[i], "-l")==0){
       if(i<argc-1){
         i++;
@@ -460,70 +470,97 @@ void scanArgs(int argc, char **argv)
       }
       continue;
     }
+    if(strcmp(argv[i], "-verbose")==0){
+      verbose=!VERBOSE;
+    }
   }
 }
 
-void pressEvent(XButtonEvent *xev)
+GdkFilterReturn pressEvent(int eventx, int eventy, int button, int time)
 {
-  int x=xev->x-(winsize/2-32);
-  int y=xev->y-(winsize/2-32);
+  if(verbose) printf("PressEvent\n");
+  int x=eventx-(winsize/2-32);
+  int y=eventy-(winsize/2-32);
 
-  if(!curmuted && (xev->button == Button4 || xev->button == Button5)) {
-    int inc;
-    if(xev->button == Button4) inc = 4;
-    else inc = -4;
+  if(button == Button4 || button == Button5) {
+      int inc;
+      if(button == Button4) inc = 4;
+      else inc = -4;
 
-    pulseSetVolume(curchannel, curvol + inc > 100 ? 100 : curvol + inc); // we could set higher values but we limit to what we can display
+      pulseSetVolume(curchannel, curvol + inc > 100 ? 100 : curvol + inc); // we could set higher values but we limit to what we can display
   } else if(x>=5 && y>=47 && x<=17 && y<=57){
     curchannel--;
     if(curchannel<0)
       curchannel=CHANNELS-1;
     btnstate |= BTNPREV;
-    rpttimer=0;
+    if(repeatTimeoutId > 0) {
+      g_source_remove(repeatTimeoutId);
+      repeatTimeoutId = 0;
+    }
+    repeatTimeoutId = g_timeout_add(REPEAT_INTERVAL, repeatTimeout, NULL);
     drawBtns(BTNPREV);
+    repaint(true);
   } else if(x>=18 && y>=47 && x<=30 && y<=57){
     curchannel++;
     if(curchannel>=CHANNELS)
       curchannel=0;
     btnstate|=BTNNEXT;
-    rpttimer=0;
+    repeatTimeoutId = g_timeout_add(REPEAT_INTERVAL, repeatTimeout, NULL);
     drawBtns(BTNNEXT);
+    repaint(true);
   } else if(!curmuted && (x>=37 && x<=56 && y>=8 && y<=56)){
     int v=((60-y)*100)/(2*25);
     dragging=true;
     pulseSetVolume(curchannel, v);
   } else if(x>=5 && y>=21 && x<=30 && y<=42) {
-    repaint(true);
-    pulseToggleMute(curchannel);
-    return;
+    if(button == Button1) {
+      pulseToggleMute(curchannel);
+      repaint(true);
+    } else if(button == Button3) {
+      openMenu(curchannel, button, time);
+      return GDK_FILTER_REMOVE;
+    }
   }
-
+  return GDK_FILTER_CONTINUE;
 }
 
-void releaseEvent(XButtonEvent *xev)
+GdkFilterReturn releaseEvent()
 {
+  if(verbose) printf("ReleaseEvent\n");
   dragging=false;
   btnstate &= ~(BTNPREV | BTNNEXT);
   drawBtns(BTNPREV | BTNNEXT);
+  if(repeatTimeoutId > 0) {
+    g_source_remove(repeatTimeoutId);
+    repeatTimeoutId = 0;
+  }
   repaint(false);
+  return GDK_FILTER_CONTINUE;
 }
 
-void motionEvent(XMotionEvent *xev)
+GdkFilterReturn motionEvent(int eventx, int eventy)
 {
-  int x=xev->x-(winsize/2-32);
-  int y=xev->y-(winsize/2-32);
+  if(verbose) printf("MotionEvent\n");
+  int x=eventx-(winsize/2-32);
+  int y=eventy-(winsize/2-32);
   if(x>=37 && x<=56 && y>=8 && dragging){
     int v=((60-y)*100)/(2*25);
     if(v<0)
       v=0;
     pulseSetVolume(curchannel, v);
   }
+  return GDK_FILTER_CONTINUE;
 }
 
 void repaint(bool force)
 {
+  struct pulseState_t state = pulseGetState();
+  int newvol = curchannel == SINK ? (state.sink.muted ? 0 : state.sink.volume) : (state.source.muted ? 0 : state.source.volume);
+  int newmuted = curchannel == SINK ? state.sink.muted : state.source.muted;
+  curvol = newvol;
+  curmuted = newmuted;
   drawMono();
-  if(force || text_counter) {
+  if(force || showText) {
     drawText(small_labels[curchannel]);
   } else {
     drawVolLevel();
@@ -559,7 +596,10 @@ void drawText(char *text)
       XCopyArea(d_display, pm_digits, pm_disp, gc_gc, 60, 0, 6, 9, 5+(i*6), 5);
     }
   }
-  text_counter = 10;
+  if(!showText) {
+    showText = true;
+    g_timeout_add(SHOW_TEXT_INTERVAL, showTextTimeout, NULL);
+  }
 }
 
 void drawVolLevel()
@@ -606,27 +646,4 @@ void drawBtn(int x, int y, int w, int h, bool down)
     XCopyArea(d_display, pm_main, pm_disp, gc_gc, x, y, w-1, 1, x+1, y+h-1);
     XCopyArea(d_display, pm_main, pm_disp, gc_gc, x+1, y+h-1, w-1, 1, x, y);
   }
-}
-
-int eventLoopPoll(struct pollfd* ufds, unsigned long nfds, int timeout, void* userdata) {
-  if(pollFDs == NULL) {
-    pollFDs = (struct pollfd*)malloc(sizeof(struct pollfd) * (nfds + 1));
-    pollFDsSize = nfds + 1;
-  } else if(pollFDsSize < nfds + 1) {
-    pollFDs = (struct pollfd*)realloc(pollFDs, sizeof(struct pollfd) * (nfds + 1));
-    pollFDsSize = nfds + 1;
-  }
-
-  memcpy(pollFDs, ufds, sizeof(struct pollfd) * nfds);
-  memcpy(&(pollFDs[nfds]), userdata, sizeof(struct pollfd));
-
-  // if the channel name is being displayed, we don't wait indefinitely, because
-  // we want to draw the volume level after a few iterations of the loop.
-  // If the volume level is being displayed (text_counter == 0), then we can wait forever.
-  int pollRes = poll(pollFDs, nfds + 1, text_counter ? 50 : -1);
-
-  if(pollRes < 0) {
-    fprintf(stderr, "Poll failed: %s\n", strerror(errno));
-  }
-  return pollRes;
 }

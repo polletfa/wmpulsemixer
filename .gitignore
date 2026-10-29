@@ -1,3 +1,5 @@
 *~
 *.o
 wmpulsemixer
+compile_commands.json
+.cache
