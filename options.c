@@ -80,35 +80,35 @@ void optionsScanCommandLine(int argc, char **argv)
     if(strcmp(argv[i], "-l")==0){
       if(i<argc-1){
         i++;
-        sprintf(options.ledcolor, "%s", argv[i]);
+        snprintf(options.ledcolor, ARG_BUF_SIZE, "%s", argv[i]);
       }
       continue;
     }
     if(strcmp(argv[i], "-b")==0){
       if(i<argc-1){
         i++;
-        sprintf(options.backcolor, "%s", argv[i]);
+        snprintf(options.backcolor, ARG_BUF_SIZE, "%s", argv[i]);
       }
       continue;
     }
     if(strcmp(argv[i], "-m")==0){
       if(i<argc-1){
         i++;
-        sprintf(options.mutecolor, "%s", argv[i]);
+        snprintf(options.mutecolor, ARG_BUF_SIZE, "%s", argv[i]);
       }
       continue;
     }
     if(strcmp(argv[i], "--position")==0 || strcmp(argv[i], "-position")==0){
       if(i<argc-1){
         i++;
-        sprintf(options.position, "%s", argv[i]);
+        snprintf(options.position, ARG_BUF_SIZE, "%s", argv[i]);
       }
       continue;
     }
     if(strcmp(argv[i], "--display")==0 || strcmp(argv[i], "-display")==0){
       if(i<argc-1){
         i++;
-        sprintf(options.display, "%s", argv[i]);
+        snprintf(options.display, ARG_BUF_SIZE, "%s", argv[i]);
       }
       continue;
     }

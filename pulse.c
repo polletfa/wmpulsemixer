@@ -10,6 +10,7 @@
 #include "pulse.h"
 #include "options.h"
 #include "window.h"
+#include "menu.h"
 
 #include <stdio.h>
 #include <math.h>
@@ -26,10 +27,12 @@ static double multiply = 100.0;
 static pa_glib_mainloop* mainloop;
 static pa_context* context;
 
+static char* defaultSinkName = NULL;
 static int defaultSinkIndex = -1;
 static int defaultSinkChannels = 1;
 static struct pulseDeviceList_t sinkList = { NULL, 0 };
 
+static char* defaultSourceName = NULL;
 static int defaultSourceIndex = -1;
 static int defaultSourceChannels = 1;
 static struct pulseDeviceList_t sourceList = { NULL, 0 };
@@ -76,6 +79,13 @@ void pulseInit(const char* name) {
  * Cleanup
  */
 void pulseCleanup() {
+  if(defaultSinkName) {
+    free(defaultSinkName);
+  }
+  if(defaultSourceName) {
+    free(defaultSourceName);
+  }
+  pa_context_set_state_callback(context, NULL, NULL);
   pa_context_disconnect(context);
   pa_context_unref(context);
   pa_glib_mainloop_free(mainloop);
@@ -209,13 +219,13 @@ static void callbackContextSubscribe(pa_context *c, pa_subscription_event_type_t
     if(options.verbose) {
       printf("Default sink volume changed\n");
     }
-    pa_operation *op = pa_context_get_sink_info_by_index(c, idx, callbackSinkInfo, NULL);
+    pa_operation *op = pa_context_get_sink_info_by_index(c, idx, callbackSinkInfo, (void*)false);
     if (op) pa_operation_unref(op);
   } else if(isChange && isSource && defaultSourceIndex == idx) {
     if(options.verbose) {
       printf("Default source volume changed\n");
     }
-    pa_operation *op = pa_context_get_source_info_by_index(c, idx, callbackSourceInfo, NULL);
+    pa_operation *op = pa_context_get_source_info_by_index(c, idx, callbackSourceInfo, (void*)false);
     if (op) pa_operation_unref(op);
   }
 }
@@ -226,7 +236,8 @@ static void callbackContextSubscribe(pa_context *c, pa_subscription_event_type_t
 static void callbackSinkInfo(pa_context *c, const pa_sink_info *info, int eol, void *userdata) {
   if(eol != 0 || info == NULL || (info->active_port && info->active_port->available == PA_PORT_AVAILABLE_NO)) return;
 
-  bool isDefault = userdata != NULL ? strcmp(userdata, info->name) == 0 : true;
+  bool isGetList = (bool)userdata;
+  bool isDefault = defaultSinkName ? strcmp(defaultSinkName, info->name) == 0 : false;
   pa_volume_t rawVol = pa_cvolume_avg(&info->volume);
   int volume = (int)(round(rawVol * multiply));
 
@@ -234,9 +245,7 @@ static void callbackSinkInfo(pa_context *c, const pa_sink_info *info, int eol, v
     if(isDefault) printf("\033[32;1m");
     printf("Sink #%u\n", info->index);
     printf("  Name:        %s\n", info->name);
-    if(userdata) {
-      printf("  Default:     %s\n", isDefault ? "Yes": "No");
-    }
+    printf("  Default:     %s\n", isDefault ? "Yes": "No");
     printf("  Description: %s\n", info->description);
     printf("  Sample Rate: %u Hz\n", info->sample_spec.rate);
     printf("  Channels:    %u\n", info->sample_spec.channels);
@@ -245,13 +254,11 @@ static void callbackSinkInfo(pa_context *c, const pa_sink_info *info, int eol, v
     if(isDefault) printf("\033[0m");
   }
 
-  if(userdata) {
+  if(isGetList) {
     sinkList.list = (struct pulseDevice_t*)realloc(sinkList.list, sizeof(struct pulseDevice_t) * (sinkList.count + 1));
     sinkList.list[sinkList.count].deviceType = SINK;
-    sinkList.list[sinkList.count].name = malloc(strlen(info->name) + 1);
-    strcpy(sinkList.list[sinkList.count].name, info->name);
-    sinkList.list[sinkList.count].description = malloc(strlen(info->description) + 1);
-    strcpy(sinkList.list[sinkList.count].description, info->description);
+    sinkList.list[sinkList.count].name = strdup(info->name);
+    sinkList.list[sinkList.count].description = strdup(info->description);
     sinkList.list[sinkList.count].isDefault = isDefault;
     sinkList.count ++;
   }
@@ -284,7 +291,8 @@ static void callbackSourceInfo(pa_context *c, const pa_source_info *info, int eo
     return;
   }
 
-  bool isDefault = userdata != NULL ? strcmp(userdata, info->name) == 0 : true;
+  bool isGetList = (bool)userdata;
+  bool isDefault = defaultSourceName ? strcmp(defaultSourceName, info->name) == 0 : false;
   pa_volume_t rawVol = pa_cvolume_avg(&info->volume);
   int volume = (int)(round(rawVol * multiply));
 
@@ -292,9 +300,7 @@ static void callbackSourceInfo(pa_context *c, const pa_source_info *info, int eo
     if(isDefault) printf("\033[32;1m");
     printf("Source #%u\n", info->index);
     printf("  Name:        %s\n", info->name);
-    if(userdata) {
-      printf("  Default:     %s\n", isDefault ? "Yes": "No");
-    }
+    printf("  Default:     %s\n", isDefault ? "Yes": "No");
     printf("  Description: %s\n", info->description);
     printf("  Sample Rate: %u Hz\n", info->sample_spec.rate);
     printf("  Channels:    %u\n", info->sample_spec.channels);
@@ -303,13 +309,11 @@ static void callbackSourceInfo(pa_context *c, const pa_source_info *info, int eo
     if(isDefault) printf("\033[0m");
   }
 
-  if(userdata) {
+  if(isGetList) {
     sourceList.list = (struct pulseDevice_t*)realloc(sourceList.list, sizeof(struct pulseDevice_t) * (sourceList.count + 1));
     sourceList.list[sourceList.count].deviceType = SOURCE;
-    sourceList.list[sourceList.count].name = malloc(strlen(info->name) + 1);
-    strcpy(sourceList.list[sourceList.count].name, info->name);
-    sourceList.list[sourceList.count].description = malloc(strlen(info->description) + 1);
-    strcpy(sourceList.list[sourceList.count].description, info->description);
+    sourceList.list[sourceList.count].name = strdup(info->name);
+    sourceList.list[sourceList.count].description = strdup(info->description);
     sourceList.list[sourceList.count].isDefault = isDefault;
     sourceList.count ++;
   }
@@ -340,6 +344,9 @@ static void callbackServerInfo(pa_context *c, const pa_server_info *info, void *
   }
 
   if(sinkList.list != NULL) {
+    if(windowState.curchannel == SINK) {
+      menuClose();
+    }
     for(int i = 0; i < sinkList.count; ++i) {
       free(sinkList.list[i].name);
       free(sinkList.list[i].description);
@@ -349,6 +356,9 @@ static void callbackServerInfo(pa_context *c, const pa_server_info *info, void *
   }
   sinkList.count = 0;
   if(sourceList.list != NULL) {
+    if(windowState.curchannel == SOURCE) {
+      menuClose();
+    }
     for(int i = 0; i < sourceList.count; ++i) {
       free(sourceList.list[i].name);
       free(sourceList.list[i].description);
@@ -358,10 +368,26 @@ static void callbackServerInfo(pa_context *c, const pa_server_info *info, void *
   }
   sourceList.count = 0;
 
-  pa_operation *op = pa_context_get_source_info_list(c, callbackSourceInfo, (void*)info->default_source_name);
+  if(defaultSinkName != NULL) {
+    free(defaultSinkName);
+    defaultSinkName = NULL;
+  }
+  if(info->default_sink_name) {
+    defaultSinkName = strdup(info->default_sink_name);
+  }
+
+  if(defaultSourceName != NULL) {
+    free(defaultSourceName);
+    defaultSourceName = NULL;
+  }
+  if(info->default_source_name) {
+    defaultSourceName = strdup(info->default_source_name);
+  }
+
+  pa_operation *op = pa_context_get_source_info_list(c, callbackSourceInfo, (void*)true);
   if (op) pa_operation_unref(op);
 
-  op = pa_context_get_sink_info_list(c, callbackSinkInfo, (void*)info->default_sink_name);
+  op = pa_context_get_sink_info_list(c, callbackSinkInfo, (void*)true);
   if (op) pa_operation_unref(op);
 }
 

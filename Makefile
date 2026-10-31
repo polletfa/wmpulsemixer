@@ -1,4 +1,4 @@
-VERSION = 0.2.1
+VERSION = 0.2.2
 
 PKG_DEPS = x11 xext xpm libpulse libpulse-mainloop-glib gtk+-3.0
 CFLAGS  += -DVERSION=\"$(VERSION)\" -D_DEFAULT_SOURCE $(shell pkg-config --cflags $(PKG_DEPS))

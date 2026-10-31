@@ -7,9 +7,9 @@
 // under certain conditions
 // See the COPYING file for a more complete notice.
 
-#include "window.h"
-#include "pulse.h"
 #include "options.h"
+#include "pulse.h"
+#include "window.h"
 #include "ui.h"
 
 int main(int argc, char **argv)

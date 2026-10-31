@@ -13,5 +13,6 @@
 #include <gtk/gtk.h>
 
 void menuOpen(int curchannel, GdkEvent* event);
+void menuClose();
 
 #endif

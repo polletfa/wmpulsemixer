@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.2 - 31 Oct 2026
+
+- Fix buffer overflow when passing very long command line arguments
+- Fix use-after-free when the device list changes while the menu is open
+- Fix NULL dereference when the server reports no default device
+- Escape device names in the menu (names containing "&" or "<" broke the label)
+- Fix Gtk-CRITICAL warning on exit
+
 ## 0.2.1 - 31 Oct 2026
 
 - Added -m option to set the color of the "mute" symbol.

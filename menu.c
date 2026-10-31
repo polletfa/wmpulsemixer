@@ -31,18 +31,18 @@ static void menuCreate(int curchannel) {
 
   for(int i = 0; i < devices->count; ++i) {
     GtkWidget *item;
-    if(devices->list[i].isDefault) {
-      item = gtk_menu_item_new();
-      GtkWidget* label = gtk_label_new("");
-      gtk_label_set_xalign(GTK_LABEL(label), 0.0);
-      gtk_label_set_use_markup(GTK_LABEL(label), TRUE);
-      char* markup = g_strdup_printf("<b>%s</b>", devices->list[i].description);
-      gtk_label_set_markup(GTK_LABEL(label), markup);
-      g_free(markup);
-      gtk_container_add(GTK_CONTAINER(item), label);
-    } else {
-      item = gtk_menu_item_new_with_label(devices->list[i].description);
-    }
+    item = gtk_menu_item_new();
+    GtkWidget* label = gtk_label_new("");
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+    gtk_label_set_use_markup(GTK_LABEL(label), TRUE);
+    char* escaped = g_markup_escape_text(devices->list[i].description, -1);
+    char* labelText = devices->list[i].isDefault
+                      ? g_strdup_printf("<b>%s</b>", escaped)
+                      : g_strdup_printf("%s", escaped);
+    gtk_label_set_markup(GTK_LABEL(label), labelText);
+    g_free(labelText);
+    g_free(escaped);
+    gtk_container_add(GTK_CONTAINER(item), label);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
     g_signal_connect(item, "activate", G_CALLBACK(menuOnSelect), devices->list + i);
   }
@@ -57,5 +57,11 @@ void menuOpen(int curchannel, GdkEvent* event) {
   } else {
     menuCreate(curchannel);
     gtk_menu_popup_at_pointer(GTK_MENU(menu), event);
+  }
+}
+
+void menuClose() {
+  if(menu) {
+    gtk_widget_destroy(menu);
   }
 }

@@ -14,17 +14,19 @@
 
 // internal definitions
 #define CHANNELS 2
-#define SINK 0
-#define SOURCE 1
+#define SINK     0
+#define SOURCE   1
 
-#define REPEAT_INTERVAL 500
+#define REPEAT_INTERVAL     500
 #define SHOW_TEXT_INTERVAL 2000
 
-#define BTNNEXT  1
-#define BTNPREV  2
+#define BTNNEXT 1
+#define BTNPREV 2
 
-#define NAME        "wmpulsemixer"
-#define CLASS       "WmPulseMixer"
+#define NAME  "wmpulsemixer"
+#define CLASS "WmPulseMixer"
+
+#define ARG_BUF_SIZE 256
 
 // command line options
 #define BOOST       1
@@ -44,11 +46,11 @@ struct options_t {
   bool ushape;
   bool astep;
   bool verbose;
-  char display[256];
-  char position[256];
-  char backcolor[256];
-  char ledcolor[256];
-  char mutecolor[256];
+  char display[ARG_BUF_SIZE];
+  char position[ARG_BUF_SIZE];
+  char backcolor[ARG_BUF_SIZE];
+  char ledcolor[ARG_BUF_SIZE];
+  char mutecolor[ARG_BUF_SIZE];
 
   int winsize;
 };
