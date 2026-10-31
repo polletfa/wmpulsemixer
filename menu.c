@@ -10,17 +10,19 @@
 #include "menu.h"
 #include "pulse.h"
 
-#include <X11/Xlib.h>
+#include <gtk/gtk.h>
 
-GtkWidget *menu = NULL;
+static GtkWidget *menu = NULL;
 
-extern Display *d_display;
+// forward declarations for private functions
+static void menuOnSelect(GtkMenuItem* menuitem, gpointer userdata);
+static void menuCreate(int curchannel);
 
-void onItemSelected(GtkMenuItem* menuitem, gpointer userdata) {
+static void menuOnSelect(GtkMenuItem* menuitem, gpointer userdata) {
   pulseSelectDevice(userdata);
 }
 
-void createMenu(int curchannel) {
+static void menuCreate(int curchannel) {
   menu = gtk_menu_new();
   g_object_add_weak_pointer(G_OBJECT(menu), (gpointer*)&menu); // set NULL on destroy
   g_signal_connect(menu, "selection-done", G_CALLBACK(gtk_widget_destroy), NULL);
@@ -42,21 +44,18 @@ void createMenu(int curchannel) {
       item = gtk_menu_item_new_with_label(devices->list[i].description);
     }
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-    g_signal_connect(item, "activate", G_CALLBACK(onItemSelected), devices->list + i);
+    g_signal_connect(item, "activate", G_CALLBACK(menuOnSelect), devices->list + i);
   }
 
   gtk_widget_show_all(menu);
 }
 
-void openMenu(int curchannel, int button, int time) {
+void menuOpen(int curchannel, GdkEvent* event) {
   if(menu) {
     // menu is open: just close, don't open a new menu
     gtk_widget_destroy(menu);
   } else {
-    createMenu(curchannel);
-    gtk_menu_popup(GTK_MENU(menu),
-                   NULL, NULL,
-                   NULL, NULL,
-                   button, time);
+    menuCreate(curchannel);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), event);
   }
 }

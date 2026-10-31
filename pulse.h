@@ -25,9 +25,6 @@ struct pulseState_t {
 
 typedef int(*pollFunction_t)(struct pollfd* ufds, unsigned long nfds, int timeout, void* userdata);
 
-#define SINK 0
-#define SOURCE 1
-
 struct pulseDevice_t {
   int deviceType;
   bool isDefault;

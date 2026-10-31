@@ -32,8 +32,8 @@ Launch the dockapp within your Window Maker startup routine or session:
 
 ```bash
 wmpulsemixer
-wmpulsemixer -w           # Launch as a Dock app
-wmpulsemixer -boost 1.5   # Allow volume up to 150%
+wmpulsemixer -w            # Launch as a Dock app
+wmpulsemixer --boost 1.5   # Allow volume up to 150%
 ```
 
 See `wmpulsemixer --help` for a full list of options.

@@ -7,6 +7,11 @@
 // under certain conditions
 // See the COPYING file for a more complete notice.
 
+#ifndef WMPULSEMIXER_MENU_H
+#define WMPULSEMIXER_MENU_H
+
 #include <gtk/gtk.h>
 
-void openMenu(int curchannel, int button, int time);
+void menuOpen(int curchannel, GdkEvent* event);
+
+#endif

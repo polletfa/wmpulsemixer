@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1 - 31 Oct 2026
+
+- Added -m option to set the color of the "mute" symbol.
+- Removed call to deprecated GTK method.
+- Stick to GNU standard of using two dashes for long options (old options still supported)
+- A little refactoring for more readability.
+
 ## 0.2.0 - 29 Oct 2026
 
 - Added feature to change the default sink/source: right-click on the icon to open a menu of available devices.

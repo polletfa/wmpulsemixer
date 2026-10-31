@@ -1,11 +1,16 @@
+VERSION = 0.2.1
+
 PKG_DEPS = x11 xext xpm libpulse libpulse-mainloop-glib gtk+-3.0
-CFLAGS  += -D_DEFAULT_SOURCE $(shell pkg-config --cflags $(PKG_DEPS))
+CFLAGS  += -DVERSION=\"$(VERSION)\" -D_DEFAULT_SOURCE $(shell pkg-config --cflags $(PKG_DEPS))
 LDFLAGS += -lm $(shell pkg-config --libs $(PKG_DEPS))
 DESTDIR =
 PREFIX = /usr/local
+DEPFLAGS = -MMD -MP
 
 CC = cc
-OBJS = wmpulsemixer.o pulse.o menu.o
+SRCS = wmpulsemixer.c pulse.c menu.c window.c options.c ui.c
+OBJS = $(SRCS:.c=.o)
+DEPS = $(SRCS:.c=.d)
 TARGET = wmpulsemixer
 
 XPMS = XPM/chars.xpm \
@@ -18,16 +23,15 @@ XPMS = XPM/chars.xpm \
 $(TARGET): $(OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS)
 
-pulse.o: pulse.c pulse.h
-wmpulsemixer.o: wmpulsemixer.c $(XPMS)
-
 %.o: %.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(OBJS) $(TARGET)
+	rm -f $(OBJS) $(TARGET) $(DEPS) *.bak
 
 install: $(TARGET)
 	install -Dm755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/$(TARGET)
 
-.PHONY: clean distclean install
+.PHONY: clean install
+
+-include $(DEPS)

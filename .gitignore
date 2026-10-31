@@ -1,5 +1,7 @@
 *~
 *.o
+*.d
+*.bak
 wmpulsemixer
 compile_commands.json
 .cache
